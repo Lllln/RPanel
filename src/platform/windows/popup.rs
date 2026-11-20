@@ -31,7 +31,7 @@ use windows::{
     core::{BOOL, Error, Result},
 };
 
-use super::Trigger;
+use super::{Trigger, mouse::WindowSource};
 use crate::platform::PanelBounds;
 
 const SUBCLASS_ID: usize = 1;
@@ -85,7 +85,7 @@ impl Popup {
                 x: point.x,
                 y: point.y,
             },
-            foreground: None,
+            source: None,
         })
     }
 
@@ -99,8 +99,8 @@ impl Popup {
         let Some(monitor) = monitor_at(point) else {
             return Ok(None);
         };
-        if let Some(foreground) = trigger.foreground
-            && !can_show(foreground, monitor.rcMonitor)
+        if let Some(source) = trigger.source
+            && !can_show(source, monitor.rcMonitor)
         {
             return Ok(None);
         }
@@ -216,21 +216,18 @@ fn monitor_at(point: Point) -> Option<MONITORINFO> {
     ok.then_some(monitor)
 }
 
-fn can_show(source: usize, monitor: RECT) -> bool {
+fn can_show(source: WindowSource, monitor: RECT) -> bool {
     // SAFETY: 这里只读取当前桌面上窗口、进程和线程状态。每个查询失败时取消弹出。
     unsafe {
-        let source = HWND(source as *mut c_void);
+        let hwnd = HWND(source.hwnd as *mut c_void);
         let mut process_id = 0;
-        let thread_id = GetWindowThreadProcessId(source, Some(&mut process_id));
-        if thread_id == 0 || process_id == GetCurrentProcessId() {
-            log::debug!("跳过弹出：来源窗口已关闭或属于 RPanel");
+        let thread_id = GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+        if thread_id != source.thread_id || process_id != source.process_id {
+            log::debug!("跳过弹出：来源窗口已关闭或更换");
             return false;
         }
-        // 右键菜单可能改变当前窗口或光标命中窗口，使用按下时的来源并验证前台应用。
-        let mut active_process = 0;
-        GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut active_process));
-        if active_process != process_id {
-            log::debug!("跳过弹出：前台应用已切换");
+        if process_id == GetCurrentProcessId() {
+            log::debug!("跳过弹出：右键按在 RPanel 自己的窗口（PID {process_id}）");
             return false;
         }
         let mut gui = GUITHREADINFO {
@@ -244,21 +241,27 @@ fn can_show(source: usize, monitor: RECT) -> bool {
             return false;
         }
         let mut rect = RECT::default();
-        if GetWindowRect(source, &mut rect).is_err()
-            || (!IsZoomed(source).as_bool()
+        if GetWindowRect(hwnd, &mut rect).is_err()
+            || (!IsZoomed(hwnd).as_bool()
                 && rect.left <= monitor.left
                 && rect.top <= monitor.top
                 && rect.right >= monitor.right
                 && rect.bottom >= monitor.bottom)
         {
-            log::debug!("跳过弹出：前台窗口不可用或处于全屏");
+            log::debug!("跳过弹出：右键目标窗口不可用或处于全屏（PID {process_id}）");
             return false;
         }
-        let allowed = matches!(is_elevated(process_id), Ok(false));
-        if !allowed {
-            log::debug!("跳过弹出：前台进程已提权或权限无法读取");
+        match is_elevated(process_id) {
+            Ok(false) => true,
+            Ok(true) => {
+                log::debug!("跳过弹出：右键目标进程已提权（PID {process_id}）");
+                false
+            }
+            Err(error) => {
+                log::debug!("跳过弹出：读取右键目标进程权限失败（PID {process_id}）：{error}");
+                false
+            }
         }
-        allowed
     }
 }
 

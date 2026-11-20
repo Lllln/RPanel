@@ -6,7 +6,7 @@ RPanel 是面向 Windows 10 / 11 的 Rust 桌面工具，阶段 2 也提供 macO
 
 在装有 Rust 和 MSVC C++ 构建工具的 Windows x64 环境运行 `cargo run --locked`。原型启动后驻留在系统托盘。对前台窗口长按右键至少 500 ms 后松开，满足手势条件时会看到浅色「查看Json」按钮。点击按钮只关闭原型面板并写一条日志。右键托盘图标可停用或重新启用「监听右键长按」，以及退出程序。运行 `cargo run --locked -- --hold-ms 700` 可用 700 ms 取代默认阈值。
 
-原型放行右键事件。长按时允许同一应用的原生上下文菜单与 RPanel 面板同时出现，原生菜单可能先接收点击。进入系统菜单、正在移动窗口、处于全屏或提权应用、前台目标切换时跳过弹出。选区读取、自动复制、编辑窗口和备用热键由后续阶段实现。
+原型放行右键事件。长按时，RPanel 根据鼠标按下时命中的窗口判断是否弹出，原应用的上下文菜单仍可同时出现。遇到失效的目标窗口、系统菜单、正在移动的窗口、全屏或提权应用时会跳过弹出。选区读取、自动复制、编辑窗口和备用热键由后续阶段实现。
 
 从托盘选「预览『查看Json』」，或运行 `cargo run --locked -- --preview`，可以单独检查面板的显示与点击。若预览能显示而长按无效，可关闭旧实例，在 PowerShell 中设置 `$env:RUST_LOG = 'rpanel=debug'` 后运行 `cargo run --locked`。Windows 调试版会输出 Hook 注册结果、右键按下与松开、按住的毫秒数、是否判定为长按，以及面板显示或跳过的原因。诊断日志不记录鼠标坐标或应用内容。
 
@@ -41,7 +41,7 @@ macOS arm64 已运行预览，确认浅色边框和中文标签正常显示，�
 
 ## 右键长按与原应用行为
 
-阶段 2 先试验**只观察的 `WH_MOUSE_LL`**。按下时记录 `MSLLHOOKSTRUCT` 中的时间戳和屏幕坐标，移动超过容差、发生冲突输入或监听关闭时取消候选。松开时使用可处理计时回绕的时间差判断是否达到本次按下时记录的阈值，默认 500 ms，达到阈值且候选仍有效才发出一次触发事件。移动容差按按下位置的显示器 DPI 换算，初值在原型中实测。未配对的松开、注入事件和失效候选全部放行。前台窗口上下文在手势期间只记录轻量标识，菜单显示前再确认目标窗口与鼠标命中窗口归属。[LowLevelMouseProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc) · [MSLLHOOKSTRUCT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msllhookstruct)
+阶段 2 先试验**只观察的 `WH_MOUSE_LL`**。按下时记录 `MSLLHOOKSTRUCT` 中的时间戳和屏幕坐标，移动超过容差、发生冲突输入或监听关闭时取消候选。松开时使用可处理计时回绕的时间差判断是否达到本次按下时记录的阈值，默认 500 ms，达到阈值且候选仍有效才发出一次触发事件。移动容差按目标窗口的 DPI 换算。未配对的松开、注入事件和失效候选全部放行。Windows 按下时记录鼠标命中的顶层窗口及进程和线程标识，菜单显示前再核对窗口是否仍存在。[LowLevelMouseProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc) · [MSLLHOOKSTRUCT](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msllhookstruct) · [WindowFromPoint](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-windowfrompoint)
 
 | 方案 | 行为与取舍 |
 | --- | --- |
@@ -51,7 +51,7 @@ macOS arm64 已运行预览，确认浅色边框和中文标签正常显示，�
 
 [Microsoft 对低级 Hook 的建议](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc) · [Raw Input](https://learn.microsoft.com/en-us/windows/win32/inputdev/using-raw-input) · [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
 
-**原应用可能同时响应长按或弹出自己的右键菜单。** 原型保留按下时的来源窗口，用进程标识校验前台应用，并通过 `GetGUIThreadInfo` 检查窗口移动和系统菜单。源应用的上下文菜单可能抢先接收点击，可按 Esc 关闭。支持全局停用，按应用排除属于后续计划。遇到可识别的独占全屏、权限边界或目标不明时跳过触发。首版按普通用户权限运行，游戏、管理员窗口、UAC 安全桌面和受保护应用不列为自动集成支持范围。全屏和应用识别属于尽力而为，特殊应用可关闭监听。[GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getguithreadinfo) · [GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) · [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey) · [UI Automation 权限说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview)
+**原应用可能同时响应长按或弹出自己的右键菜单。** 原型保留按下时的来源窗口，通过 `GetGUIThreadInfo` 检查窗口移动和系统菜单。RPanel 或其他窗口仍在前台时，只要鼠标命中的目标有效，手势仍可触发。源应用的上下文菜单可能抢先接收点击，可按 Esc 关闭。支持全局停用，按应用排除属于后续计划。遇到可识别的独占全屏、权限边界或目标不明时跳过触发。调试日志会分别报告已确认的提权状态和权限查询错误。首版按普通用户权限运行，游戏、管理员窗口、UAC 安全桌面和受保护应用不列为自动集成支持范围。全屏和应用识别属于尽力而为，特殊应用可关闭监听。[GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getguithreadinfo) · [GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) · [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey) · [UI Automation 权限说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview)
 
 ## 悬浮菜单、焦点与多显示器
 

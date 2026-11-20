@@ -7,7 +7,7 @@ use std::{
 use rpanel::gesture::{Point, RightHold};
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
     },
@@ -22,13 +22,40 @@ use crate::platform::{MouseEvent, PanelBounds};
 #[derive(Clone, Copy)]
 pub struct Trigger {
     pub point: Point,
-    // 跨线程仅携带标识，使用前检查前台窗口。
-    pub(super) foreground: Option<usize>,
+    pub(super) source: Option<WindowSource>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct WindowSource {
+    pub hwnd: usize,
+    pub thread_id: u32,
+    pub process_id: u32,
+}
+
+impl WindowSource {
+    fn at_point(point: POINT) -> Option<Self> {
+        // SAFETY: Hook 线程不拥有窗口。WindowFromPoint 不向其他线程同步发送命中测试消息。
+        unsafe {
+            let hit = WindowFromPoint(point);
+            if hit.is_invalid() {
+                return None;
+            }
+            let root = GetAncestor(hit, GA_ROOT);
+            let hwnd = if root.is_invalid() { hit } else { root };
+            let mut process_id = 0;
+            let thread_id = GetWindowThreadProcessId(hwnd, Some(&mut process_id));
+            (thread_id != 0).then_some(Self {
+                hwnd: hwnd.0 as usize,
+                thread_id,
+                process_id,
+            })
+        }
+    }
 }
 
 struct HookState {
     hold: RightHold,
-    foreground: HWND,
+    source: Option<WindowSource>,
     bounds: Arc<Mutex<Option<PanelBounds>>>,
     pending: PendingMouseEvents,
     trace: bool,
@@ -94,13 +121,13 @@ impl HookState {
                     self.pending.right_down = true;
                     self.trace_press_at = Some(event.time);
                 }
-                // SAFETY: 这两个查询只读取窗口状态。空 HWND 由下方分支处理。
-                self.foreground = unsafe { GetForegroundWindow() };
-                if self.foreground.is_invalid() {
-                    self.hold.cancel();
-                } else {
-                    let dpi = unsafe { GetDpiForWindow(self.foreground) }.max(96);
+                self.source = WindowSource::at_point(event.pt);
+                if let Some(source) = self.source {
+                    // SAFETY: 查询刚取得的窗口 DPI。窗口已关闭时 API 返回零，使用默认值。
+                    let dpi = unsafe { GetDpiForWindow(HWND(source.hwnd as *mut _)) }.max(96);
                     self.hold.press(event.time, point, (8 * dpi).div_ceil(96));
+                } else {
+                    self.hold.cancel();
                 }
             }
             WM_MOUSEMOVE => self.hold.move_to(point),
@@ -116,10 +143,12 @@ impl HookState {
                         qualified,
                     });
                 }
-                if qualified {
+                if let Some(source) = self.source.take()
+                    && qualified
+                {
                     self.pending.show = Some(Trigger {
                         point,
-                        foreground: Some(self.foreground.0 as usize),
+                        source: Some(source),
                     });
                 }
             }
@@ -259,7 +288,7 @@ fn listen(
     HOOK_STATE.with(|state| {
         state.replace(Some(HookState {
             hold: RightHold::new(threshold_ms),
-            foreground: HWND::default(),
+            source: None,
             bounds,
             pending: PendingMouseEvents::default(),
             trace: log::log_enabled!(log::Level::Debug),
@@ -351,6 +380,7 @@ fn drain_state(cancel: bool) -> PendingMouseEvents {
         };
         if cancel {
             state.hold.cancel();
+            state.source = None;
             state.trace_press_at = None;
         }
         state.posted = false;
