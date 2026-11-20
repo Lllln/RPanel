@@ -41,7 +41,6 @@ pub fn run() -> AppResult<()> {
 
 struct LaunchOptions {
     threshold_ms: u32,
-    #[cfg(target_os = "macos")]
     preview: bool,
 }
 
@@ -49,7 +48,6 @@ impl Default for LaunchOptions {
     fn default() -> Self {
         Self {
             threshold_ms: DEFAULT_HOLD_MS,
-            #[cfg(target_os = "macos")]
             preview: false,
         }
     }
@@ -61,11 +59,9 @@ fn launch_options() -> AppResult<Option<LaunchOptions>> {
         None => Ok(Some(LaunchOptions::default())),
         Some("--help" | "-h") if args.next().is_none() => {
             println!("RPanel [--hold-ms <毫秒>]，右键长按阈值默认为 {DEFAULT_HOLD_MS} ms。");
-            #[cfg(target_os = "macos")]
             println!("RPanel --preview，启动时立即预览面板。");
             Ok(None)
         }
-        #[cfg(target_os = "macos")]
         Some("--preview") if args.next().is_none() => Ok(Some(LaunchOptions {
             preview: true,
             ..Default::default()
@@ -77,7 +73,6 @@ fn launch_options() -> AppResult<Option<LaunchOptions>> {
             {
                 return Ok(Some(LaunchOptions {
                     threshold_ms: value,
-                    #[cfg(target_os = "macos")]
                     preview: false,
                 }));
             }
@@ -89,7 +84,6 @@ fn launch_options() -> AppResult<Option<LaunchOptions>> {
 
 enum AppEvent {
     Mouse(MouseEvent),
-    #[cfg(target_os = "macos")]
     Preview,
     Toggle,
     Exit,
@@ -121,7 +115,6 @@ impl App {
         let toggle = CheckMenuItem::new("监听右键长按", true, false, None);
         let exit = MenuItem::new("退出 RPanel", true, None);
         let menu = Menu::new();
-        #[cfg(target_os = "macos")]
         let preview_id = {
             let preview = MenuItem::new("预览「查看Json」", true, None);
             menu.append(&preview)?;
@@ -136,12 +129,10 @@ impl App {
         let toggle_id = toggle.id().clone();
         let exit_id = exit.id().clone();
         let tray_ctx = cc.egui_ctx.clone();
-        #[cfg(target_os = "macos")]
         if launch.preview {
             send_event(&sender, &tray_ctx, AppEvent::Preview);
         }
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-            #[cfg(target_os = "macos")]
             if event.id == preview_id {
                 send_event(&sender, &tray_ctx, AppEvent::Preview);
                 return;
@@ -199,8 +190,11 @@ impl eframe::App for App {
                 AppEvent::Mouse(MouseEvent::Show(trigger)) if self.listening => {
                     self.show(ctx, trigger)
                 }
-                #[cfg(target_os = "macos")]
-                AppEvent::Preview => self.show(ctx, Popup::preview()),
+                AppEvent::Preview => {
+                    if let Some(trigger) = Popup::preview() {
+                        self.show(ctx, trigger);
+                    }
+                }
                 AppEvent::Mouse(MouseEvent::Dismiss(generation))
                     if generation == self.generation =>
                 {

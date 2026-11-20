@@ -34,11 +34,11 @@ impl Popup {
         })
     }
 
-    pub fn preview() -> Trigger {
-        Trigger {
+    pub fn preview() -> Option<Trigger> {
+        Some(Trigger {
             point: appkit_point(NSEvent::mouseLocation()),
             foreground: None,
-        }
+        })
     }
 
     pub fn show(

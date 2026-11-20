@@ -8,9 +8,12 @@ use windows::{
             CloseHandle, E_FAIL, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
             SetLastError, WIN32_ERROR, WPARAM,
         },
-        Graphics::Gdi::{
-            CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, HRGN,
-            MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, SetWindowRgn,
+        Graphics::{
+            Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute},
+            Gdi::{
+                CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, HRGN, MONITOR_DEFAULTTONEAREST,
+                MONITORINFO, MonitorFromPoint, SetWindowRgn,
+            },
         },
         Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
         System::Threading::{
@@ -25,7 +28,7 @@ use windows::{
             WindowsAndMessaging::*,
         },
     },
-    core::{Error, Result},
+    core::{BOOL, Error, Result},
 };
 
 use super::Trigger;
@@ -65,9 +68,25 @@ impl Popup {
                 return Err(Error::new(E_FAIL, "无法配置悬浮面板的窗口子类"));
             }
         }
-        // eframe 可能在首帧后自动显示根窗口，空区域使驻留时的窗口不出现在桌面。
-        mask_window(hwnd)?;
+        // eframe 会在首帧后自动显示根窗口。DWM 遮蔽允许渲染，同时防止驻留窗口显示。
+        set_cloaked(hwnd, true)?;
         Ok(Self { hwnd })
+    }
+
+    pub fn preview() -> Option<Trigger> {
+        let mut point = POINT::default();
+        // SAFETY: point 是有效的输出缓冲区，坐标仅用于定位主动请求的预览。
+        if let Err(error) = unsafe { GetCursorPos(&mut point) } {
+            log::warn!("读取预览位置失败：{error}");
+            return None;
+        }
+        Some(Trigger {
+            point: Point {
+                x: point.x,
+                y: point.y,
+            },
+            foreground: None,
+        })
     }
 
     pub fn show(
@@ -80,8 +99,9 @@ impl Popup {
         let Some(monitor) = monitor_at(point) else {
             return Ok(None);
         };
-        if !can_show(trigger, monitor.rcMonitor) {
-            log::debug!("当前前台窗口不满足弹出条件");
+        if let Some(foreground) = trigger.foreground
+            && !can_show(foreground, point, monitor.rcMonitor)
+        {
             return Ok(None);
         }
 
@@ -120,6 +140,7 @@ impl Popup {
             )?;
         }
 
+        set_cloaked(self.hwnd, false)?;
         self.bounds(generation).map(Some)
     }
 
@@ -139,15 +160,23 @@ impl Popup {
     pub fn hide(&self) {
         // SAFETY: 在 GUI 线程隐藏自己的窗口。ShowWindow 的返回值表示此前可见性。
         let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
-        if let Err(error) = mask_window(self.hwnd) {
+        if let Err(error) = set_cloaked(self.hwnd, true) {
             log::warn!("无法屏蔽已隐藏的悬浮面板：{error}");
         }
     }
 }
 
-fn mask_window(hwnd: HWND) -> Result<()> {
-    // SAFETY: 相同的起止坐标创建空区域，返回的句柄交给 set_region 处理。
-    set_region(hwnd, unsafe { CreateRectRgn(0, 0, 0, 0) })
+fn set_cloaked(hwnd: HWND, cloaked: bool) -> Result<()> {
+    let value = BOOL::from(cloaked);
+    // SAFETY: hwnd 属于当前 GUI 线程。DWMWA_CLOAK 接收 BOOL，引用在调用期间有效。
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAK,
+            std::ptr::from_ref(&value).cast(),
+            size_of::<BOOL>() as u32,
+        )
+    }
 }
 
 fn set_region(hwnd: HWND, region: HRGN) -> Result<()> {
@@ -186,20 +215,12 @@ fn monitor_at(point: Point) -> Option<MONITORINFO> {
     ok.then_some(monitor)
 }
 
-fn can_show(trigger: Trigger, monitor: RECT) -> bool {
+fn can_show(source: usize, point: Point, monitor: RECT) -> bool {
     // SAFETY: 这里只读取当前桌面上窗口、进程和线程状态。每个查询失败时取消弹出。
     unsafe {
         let foreground = GetForegroundWindow();
-        if foreground.is_invalid() || foreground.0 as usize != trigger.foreground {
-            return false;
-        }
-        let hit = WindowFromPoint(POINT {
-            x: trigger.point.x,
-            y: trigger.point.y,
-        });
-        if hit.is_invalid()
-            || GetAncestor(hit, GA_ROOTOWNER) != GetAncestor(foreground, GA_ROOTOWNER)
-        {
+        if foreground.is_invalid() || foreground.0 as usize != source {
+            log::debug!("跳过弹出：前台窗口已切换");
             return false;
         }
         let mut process_id = 0;
@@ -212,23 +233,49 @@ fn can_show(trigger: Trigger, monitor: RECT) -> bool {
             ..Default::default()
         };
         if GetGUIThreadInfo(thread_id, &mut gui).is_err()
-            || !gui.hwndCapture.is_invalid()
-            || gui.flags.0
-                & (GUI_INMENUMODE | GUI_INMOVESIZE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE).0
-                != 0
+            || gui.flags.0 & (GUI_INMOVESIZE | GUI_SYSTEMMENUMODE).0 != 0
         {
+            log::debug!("跳过弹出：前台线程不可用、正在移动窗口或操作系统菜单");
+            return false;
+        }
+        let root = GetAncestor(foreground, GA_ROOTOWNER);
+        let hit = WindowFromPoint(POINT {
+            x: point.x,
+            y: point.y,
+        });
+        // 原应用可能在我们处理松开事件前弹出菜单，命中同线程的原生菜单仍是同一次手势。
+        let hits_current_menu = gui.flags.0 & (GUI_INMENUMODE | GUI_POPUPMENUMODE).0 != 0
+            && is_native_menu(hit, thread_id);
+        if hit.is_invalid() || (GetAncestor(hit, GA_ROOTOWNER) != root && !hits_current_menu) {
+            log::debug!("跳过弹出：光标下的窗口不属于本次手势来源");
             return false;
         }
         let mut rect = RECT::default();
         if GetWindowRect(foreground, &mut rect).is_err()
-            || (rect.left <= monitor.left
+            || (!IsZoomed(foreground).as_bool()
+                && rect.left <= monitor.left
                 && rect.top <= monitor.top
                 && rect.right >= monitor.right
                 && rect.bottom >= monitor.bottom)
         {
+            log::debug!("跳过弹出：前台窗口不可用或处于全屏");
             return false;
         }
-        matches!(is_elevated(process_id), Ok(false))
+        let allowed = matches!(is_elevated(process_id), Ok(false));
+        if !allowed {
+            log::debug!("跳过弹出：前台进程已提权或权限无法读取");
+        }
+        allowed
+    }
+}
+
+fn is_native_menu(hwnd: HWND, owner_thread: u32) -> bool {
+    let mut class = [0; 16];
+    // SAFETY: 查询当前光标命中的窗口，类名输出缓冲区在调用期间有效。
+    unsafe {
+        GetWindowThreadProcessId(hwnd, None) == owner_thread
+            && GetClassNameW(hwnd, &mut class) == 6
+            && class[..6] == *windows::core::w!("#32768").as_wide()
     }
 }
 

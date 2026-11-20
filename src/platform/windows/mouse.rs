@@ -23,7 +23,7 @@ use crate::platform::{MouseEvent, PanelBounds};
 pub struct Trigger {
     pub point: Point,
     // 跨线程仅携带标识，使用前检查前台窗口。
-    pub(super) foreground: usize,
+    pub(super) foreground: Option<usize>,
 }
 
 struct HookState {
@@ -76,7 +76,7 @@ impl HookState {
                 if unsafe { GetForegroundWindow() } == self.foreground {
                     self.show = Some(Trigger {
                         point,
-                        foreground: self.foreground.0 as usize,
+                        foreground: Some(self.foreground.0 as usize),
                     });
                 }
             }
@@ -262,6 +262,7 @@ fn listen(
                     emit(MouseEvent::Dismiss(generation));
                 }
                 if let Some(trigger) = show {
+                    log::debug!("已检测到右键长按");
                     emit(MouseEvent::Show(trigger));
                 }
             }

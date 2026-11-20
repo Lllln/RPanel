@@ -6,7 +6,9 @@ RPanel 是面向 Windows 10 / 11 的 Rust 桌面工具，阶段 2 也提供 macO
 
 在装有 Rust 和 MSVC C++ 构建工具的 Windows x64 环境运行 `cargo run --locked`。原型启动后驻留在系统托盘。对前台窗口长按右键至少 500 ms 后松开，满足手势条件时会看到浅色「查看Json」按钮。点击按钮只关闭原型面板并写一条日志。右键托盘图标可停用或重新启用「监听右键长按」，以及退出程序。运行 `cargo run --locked -- --hold-ms 700` 可用 700 ms 取代默认阈值。
 
-原型放行右键事件，遇到可识别的原生菜单、鼠标捕获、全屏窗口、提权进程或目标窗口变化时跳过本次弹出。若测试应用每次都弹出原生菜单，可在同一应用没有上下文菜单的客户区测手势。选区读取、自动复制、编辑窗口和备用热键由后续阶段实现。
+原型放行右键事件。长按时允许同一应用的原生上下文菜单与 RPanel 面板同时出现，原生菜单可能先接收点击。进入系统菜单、正在移动窗口、处于全屏或提权应用、前台目标切换时跳过弹出。选区读取、自动复制、编辑窗口和备用热键由后续阶段实现。
+
+从托盘选「预览『查看Json』」，或运行 `cargo run --locked -- --preview`，可以单独检查面板的显示与点击。若预览能显示而长按无效，可关闭旧实例，在 PowerShell 中设置 `$env:RUST_LOG = 'rpanel=debug'` 后运行 `cargo run --locked`，查看是否检测到了长按以及窗口检查结果。
 
 本仓库通过 `rust-toolchain.toml` 锁定 Rust 1.100.0。macOS arm64 已通过 `cargo fmt --check`、`cargo test --locked` 的 7 项测试和 Clippy。安装 `x86_64-pc-windows-msvc` 标准库后，该目标的 `cargo check` 和 Clippy 也已通过。这些检查覆盖阈值、取消、时间戳回绕和工作区定位。Windows 可执行文件链接与桌面交互仍待验证。
 
@@ -49,7 +51,7 @@ macOS arm64 已运行预览，确认浅色边框和中文标签正常显示，�
 
 [Microsoft 对低级 Hook 的建议](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc) · [Raw Input](https://learn.microsoft.com/en-us/windows/win32/inputdev/using-raw-input) · [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
 
-**原应用可能同时响应长按或弹出自己的右键菜单。** 显示前检查前台切换、鼠标捕获以及 `GetGUIThreadInfo` 可见的菜单和移动状态。命中冲突时取消本次弹出，由用户从托盘打开粘贴界面，或使用可配置的备用全局热键。应用自绘菜单和稍后出现的菜单可能逃过检查，因此不能保证互斥。支持全局停用和按应用排除，遇到可识别的独占全屏、权限边界或目标不明时跳过触发。首版按普通用户权限运行，游戏、管理员窗口、UAC 安全桌面和受保护应用不列为自动集成支持范围。全屏和应用识别属于尽力而为，特殊应用可关闭监听。[GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getguithreadinfo) · [GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) · [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey) · [UI Automation 权限说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview)
+**原应用可能同时响应长按或弹出自己的右键菜单。** 原型用 `GetGUIThreadInfo` 检查移动窗口、系统菜单和当前应用的上下文菜单。显示面板时允许命中同线程的原生上下文菜单窗口。原生菜单有可能先接收点击，可先按 Esc 关闭原应用菜单。支持全局停用，按应用排除属于后续计划。遇到可识别的独占全屏、权限边界或目标不明时跳过触发。首版按普通用户权限运行，游戏、管理员窗口、UAC 安全桌面和受保护应用不列为自动集成支持范围。全屏和应用识别属于尽力而为，特殊应用可关闭监听。[GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getguithreadinfo) · [GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) · [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey) · [UI Automation 权限说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview)
 
 ## 悬浮菜单、焦点与多显示器
 
