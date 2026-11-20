@@ -230,15 +230,14 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if self.visible && panel::show(ui) {
+        if panel::show(ui) && self.visible {
             log::info!("查看Json 已触发，选区读取将在下一阶段接入");
             self.hide();
         }
     }
 
-    #[cfg(target_os = "macos")]
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0; 4]
+        if cfg!(windows) { [1.0; 4] } else { [0.0; 4] }
     }
 }
 

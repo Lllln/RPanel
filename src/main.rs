@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 #[cfg(any(windows, target_os = "macos"))]
 mod app;
 #[cfg(any(windows, target_os = "macos"))]

@@ -25,6 +25,8 @@ cargo build --release --locked --target x86_64-pc-windows-msvc  # 只编译 Rele
 
 打包脚本仅在构建时启用静态 C 运行库链接。生成的单文件位于 `target/x86_64-pc-windows-msvc/release/rpanel.exe`，`dist/rpanel-windows-x64.zip` 中仅含这一个文件。发布前仍需在干净的 Windows 上验证运行库依赖和双击启动。[Rust CRT 链接说明](https://doc.rust-lang.org/stable/reference/linkage.html#static-and-dynamic-c-runtimes)
 
+在 Windows 上双击 Release 版时，程序只在系统托盘驻留，长按右键后才显示面板。调试版使用控制台输出日志。
+
 ### 在 macOS 测试
 
 在 macOS 桌面运行 `cargo run --locked`，从菜单栏的 RPanel 图标打开「预览『查看Json』」可以直接测试面板。也可运行 `cargo run --locked -- --preview` 在启动时预览，或在其他应用里按住鼠标右键至少 500 ms 后松开。菜单栏图标提供监听开关和退出。点击面板里的「查看Json」会关闭面板并写日志，本阶段未接入选区、剪贴板或 JSON 编辑。

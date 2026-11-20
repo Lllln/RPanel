@@ -5,12 +5,12 @@ use rpanel::{gesture::Point, placement::axis_position};
 use windows::{
     Win32::{
         Foundation::{
-            CloseHandle, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError,
-            WIN32_ERROR, WPARAM,
+            CloseHandle, E_FAIL, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
+            SetLastError, WIN32_ERROR, WPARAM,
         },
         Graphics::Gdi::{
-            CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST,
-            MONITORINFO, MonitorFromPoint, SetWindowRgn,
+            CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, HRGN,
+            MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, SetWindowRgn,
         },
         Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
         System::Threading::{
@@ -49,10 +49,7 @@ pub struct Popup {
 impl Popup {
     pub fn attach(handle: RawWindowHandle) -> Result<Self> {
         let RawWindowHandle::Win32(handle) = handle else {
-            return Err(Error::new(
-                windows::Win32::Foundation::E_FAIL,
-                "eframe 未提供 Win32 窗口句柄",
-            ));
+            return Err(Error::new(E_FAIL, "eframe 未提供 Win32 窗口句柄"));
         };
         let hwnd = HWND(handle.hwnd.get() as *mut c_void);
         // SAFETY: eframe 在 GUI 线程交付尚未显示的本进程窗口。子类过程不持有 Rust 引用。
@@ -65,11 +62,11 @@ impl Popup {
                 return Err(Error::from_thread());
             }
             if !SetWindowSubclass(hwnd, Some(popup_proc), SUBCLASS_ID, 0).as_bool() {
-                return Err(Error::from_hresult(windows::core::HRESULT(
-                    0x80004005u32 as i32,
-                )));
+                return Err(Error::new(E_FAIL, "无法配置悬浮面板的窗口子类"));
             }
         }
+        // eframe 可能在首帧后自动显示根窗口，空区域使驻留时的窗口不出现在桌面。
+        mask_window(hwnd)?;
         Ok(Self { hwnd })
     }
 
@@ -110,12 +107,8 @@ impl Popup {
             let x = axis_position(point.x, work.left, work.right, width, scale(10));
             let y = axis_position(point.y, work.top, work.bottom, height, scale(10));
 
-            // SetWindowRgn 成功时接管区域，失败时仍由本进程释放。
             let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, scale(24), scale(24));
-            if !region.is_invalid() && SetWindowRgn(self.hwnd, Some(region), false) == 0 {
-                let _ = DeleteObject(region.into());
-                log::debug!("未能设置悬浮面板圆角区域");
-            }
+            set_region(self.hwnd, region)?;
             SetWindowPos(
                 self.hwnd,
                 Some(HWND_TOPMOST),
@@ -146,7 +139,29 @@ impl Popup {
     pub fn hide(&self) {
         // SAFETY: 在 GUI 线程隐藏自己的窗口。ShowWindow 的返回值表示此前可见性。
         let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
+        if let Err(error) = mask_window(self.hwnd) {
+            log::warn!("无法屏蔽已隐藏的悬浮面板：{error}");
+        }
     }
+}
+
+fn mask_window(hwnd: HWND) -> Result<()> {
+    // SAFETY: 相同的起止坐标创建空区域，返回的句柄交给 set_region 处理。
+    set_region(hwnd, unsafe { CreateRectRgn(0, 0, 0, 0) })
+}
+
+fn set_region(hwnd: HWND, region: HRGN) -> Result<()> {
+    if region.is_invalid() {
+        return Err(Error::new(E_FAIL, "无法创建悬浮面板窗口区域"));
+    }
+    // SAFETY: hwnd 是 GUI 线程自己的窗口。系统只在成功后接管 region。
+    unsafe {
+        if SetWindowRgn(hwnd, Some(region), false) == 0 {
+            let _ = DeleteObject(region.into());
+            return Err(Error::new(E_FAIL, "无法设置悬浮面板窗口区域"));
+        }
+    }
+    Ok(())
 }
 
 fn monitor_at(point: Point) -> Option<MONITORINFO> {
