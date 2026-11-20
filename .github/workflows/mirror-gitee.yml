@@ -1,0 +1,61 @@
+name: Mirror to Gitee
+
+'on':
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-to-gitee
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    env:
+      GITEE_REPO: git@gitee.com:llllnD/rpanel.git
+      MIRROR_DIR: ${{ runner.temp }}/rpanel-gitee.git
+
+    steps:
+      - name: Fetch GitHub branches and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init --bare --quiet "$MIRROR_DIR"
+          authorization=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          printf '::add-mask::%s\n' "$authorization"
+          # 每次从 GitHub 获取完整分支和标签，避免并发推送使用过期事件快照。
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraHeader" \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $authorization" \
+          git -C "$MIRROR_DIR" fetch --no-tags \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" \
+            'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+
+      - name: Push branches and tags to Gitee
+        env:
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+          GITEE_KNOWN_HOSTS: ${{ vars.GITEE_KNOWN_HOSTS }}
+        run: |
+          if [[ -z "$GITEE_SSH_PRIVATE_KEY" || -z "$GITEE_KNOWN_HOSTS" ]]; then
+            echo '::error::请配置 Actions secret GITEE_SSH_PRIVATE_KEY 和变量 GITEE_KNOWN_HOSTS。'
+            exit 1
+          fi
+
+          umask 077
+          ssh_dir=$(mktemp -d "$RUNNER_TEMP/gitee-ssh.XXXXXX")
+          trap 'rm -rf -- "$ssh_dir"' EXIT
+          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" | tr -d '\r' > "$ssh_dir/key"
+          printf '%s\n' "$GITEE_KNOWN_HOSTS" | tr -d '\r' > "$ssh_dir/known_hosts"
+          unset GITEE_SSH_PRIVATE_KEY
+
+          # 仅接受已配置的主机密钥。保留目标独有的引用和已有历史。
+          GIT_SSH_COMMAND="ssh -F /dev/null -i \"$ssh_dir/key\" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=\"$ssh_dir/known_hosts\" -o ConnectTimeout=15" \
+          git -C "$MIRROR_DIR" push --porcelain "$GITEE_REPO" \
+            'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'

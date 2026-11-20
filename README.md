@@ -142,3 +142,11 @@ RPanel/
 | 5 · 集成与发布 | 完成托盘、配置持久化和正常退出。首先构建 `x86_64-pc-windows-msvc` Release，检查依赖并在未安装 Rust 的干净 Windows 环境启动。 | 覆盖睡眠恢复、反复显示和隐藏、关闭编辑窗口、监听禁用、退出后输入正常及句柄释放。记录 Windows 10 / 11 的待机 CPU、重绘次数、内存与句柄变化，以及持续运行结果。若有额外 VC 运行库依赖，验证静态 CRT 配置与实际产物后再交付独立 exe。 |
 
 从阶段 2 起，每阶段执行适用的 `cargo fmt --check`、`cargo check --target x86_64-pc-windows-msvc`、`cargo test` 和 `cargo clippy --all-targets -- -D warnings`。阶段 5 额外执行 `cargo build --release --locked --target x86_64-pc-windows-msvc`。兼容性与性能结果以 Windows 桌面环境的实测记录为准。[Rust Windows MSVC 目标](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html) · [Rust CRT 链接](https://doc.rust-lang.org/stable/reference/linkage.html)
+
+## Gitee 镜像
+
+[Mirror to Gitee](.github/workflows/mirror-gitee.yml) 在 GitHub 推送时同步所有分支和标签到 `git@gitee.com:llllnD/rpanel.git`，也支持在 Actions 页面手动运行。同步保留 Gitee 独有的分支和标签，有分叉历史的引用会被 Git 拒绝更新，请先核对两端历史。
+
+1. 在 Gitee 给有目标仓库推送权限的身份配置专用 SSH 公钥。
+2. 在 GitHub 仓库 **Settings → Secrets and variables → Actions** 创建 `GITEE_SSH_PRIVATE_KEY` secret，值为对应的私钥。创建 `GITEE_KNOWN_HOSTS` 变量，值为确认可信的 `gitee.com` `known_hosts` 完整记录。可从已建立信任的终端用 `ssh-keygen -F gitee.com` 查找该记录。[GitHub Actions secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets) · [配置变量](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-variables)
+3. 在 GitHub 的 **Actions → Mirror to Gitee** 手动运行一次，检查 Gitee 中的分支和标签。
