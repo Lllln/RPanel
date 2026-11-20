@@ -30,9 +30,34 @@ struct HookState {
     hold: RightHold,
     foreground: HWND,
     bounds: Arc<Mutex<Option<PanelBounds>>>,
+    pending: PendingMouseEvents,
+    trace: bool,
+    trace_press_at: Option<u32>,
+    posted: bool,
+}
+
+#[derive(Default)]
+struct PendingMouseEvents {
     show: Option<Trigger>,
     dismiss: Option<u64>,
-    posted: bool,
+    right_down: bool,
+    right_up: Option<RightRelease>,
+    injected_right_button: Option<u32>,
+}
+
+struct RightRelease {
+    elapsed_ms: Option<u32>,
+    qualified: bool,
+}
+
+impl PendingMouseEvents {
+    fn has_events(&self) -> bool {
+        self.show.is_some()
+            || self.dismiss.is_some()
+            || self.right_down
+            || self.right_up.is_some()
+            || self.injected_right_button.is_some()
+    }
 }
 
 thread_local! {
@@ -43,6 +68,10 @@ impl HookState {
     // 此方法在 Hook 中运行。只更新当前线程的状态，不阻塞等待 GUI。
     fn observe(&mut self, message: u32, event: MSLLHOOKSTRUCT) {
         if event.flags & LLMHF_INJECTED != 0 {
+            if self.trace && matches!(message, WM_RBUTTONDOWN | WM_RBUTTONUP) {
+                self.pending.injected_right_button = Some(message);
+                self.post_pending();
+            }
             return;
         }
         let point = Point {
@@ -56,11 +85,15 @@ impl HookState {
             && let Some(bounds) = *bounds
             && !bounds.contains(point)
         {
-            self.dismiss = Some(bounds.generation);
+            self.pending.dismiss = Some(bounds.generation);
         }
 
         match message {
             WM_RBUTTONDOWN => {
+                if self.trace {
+                    self.pending.right_down = true;
+                    self.trace_press_at = Some(event.time);
+                }
                 // SAFETY: 这两个查询只读取窗口状态。空 HWND 由下方分支处理。
                 self.foreground = unsafe { GetForegroundWindow() };
                 if self.foreground.is_invalid() {
@@ -71,10 +104,20 @@ impl HookState {
                 }
             }
             WM_MOUSEMOVE => self.hold.move_to(point),
-            WM_RBUTTONUP if self.hold.release(event.time, point) => {
-                // SAFETY: 前台窗口标识在使用前再次校验，不跨线程解引用。
-                if unsafe { GetForegroundWindow() } == self.foreground {
-                    self.show = Some(Trigger {
+            WM_RBUTTONUP => {
+                let qualified = self.hold.release(event.time, point);
+                if self.trace {
+                    let elapsed_ms = self
+                        .trace_press_at
+                        .take()
+                        .map(|at| event.time.wrapping_sub(at));
+                    self.pending.right_up = Some(RightRelease {
+                        elapsed_ms,
+                        qualified,
+                    });
+                }
+                if qualified {
+                    self.pending.show = Some(Trigger {
                         point,
                         foreground: Some(self.foreground.0 as usize),
                     });
@@ -86,15 +129,18 @@ impl HookState {
             _ => {}
         }
 
-        if !self.posted && (self.show.is_some() || self.dismiss.is_some()) {
+        self.post_pending();
+    }
+
+    fn post_pending(&mut self) {
+        if !self.posted && self.pending.has_events() {
             // SAFETY: 监听线程已建立消息队列，消息不携带指针或借用。
             self.posted = unsafe {
                 PostThreadMessageW(GetCurrentThreadId(), WM_MOUSE_EVENTS, WPARAM(0), LPARAM(0))
                     .is_ok()
             };
             if !self.posted {
-                self.show = None;
-                self.dismiss = None;
+                self.pending = PendingMouseEvents::default();
             }
         }
     }
@@ -215,8 +261,9 @@ fn listen(
             hold: RightHold::new(threshold_ms),
             foreground: HWND::default(),
             bounds,
-            show: None,
-            dismiss: None,
+            pending: PendingMouseEvents::default(),
+            trace: log::log_enabled!(log::Level::Debug),
+            trace_press_at: None,
             posted: false,
         }));
     });
@@ -257,11 +304,31 @@ fn listen(
                 emit(MouseEvent::Listening(hook.is_some()));
             }
             WM_MOUSE_EVENTS => {
-                let (dismiss, show) = drain_state(false);
-                if let Some(generation) = dismiss {
+                let pending = drain_state(false);
+                if pending.right_down {
+                    log::debug!("收到右键按下");
+                }
+                if let Some(release) = pending.right_up {
+                    match release.elapsed_ms {
+                        Some(ms) => log::debug!(
+                            "收到右键松开，按住 {ms} ms，有效长按：{}",
+                            release.qualified
+                        ),
+                        None => log::debug!("收到右键松开，缺少对应的按下事件"),
+                    }
+                }
+                if let Some(message) = pending.injected_right_button {
+                    let action = if message == WM_RBUTTONDOWN {
+                        "按下"
+                    } else {
+                        "松开"
+                    };
+                    log::debug!("系统标记为注入事件，已忽略右键{action}");
+                }
+                if let Some(generation) = pending.dismiss {
                     emit(MouseEvent::Dismiss(generation));
                 }
-                if let Some(trigger) = show {
+                if let Some(trigger) = pending.show {
                     log::debug!("已检测到右键长按");
                     emit(MouseEvent::Show(trigger));
                 }
@@ -276,22 +343,30 @@ fn listen(
     HOOK_STATE.with(|state| state.replace(None));
 }
 
-fn drain_state(cancel: bool) -> (Option<u64>, Option<Trigger>) {
+fn drain_state(cancel: bool) -> PendingMouseEvents {
     HOOK_STATE.with(|state| {
         let mut state = state.borrow_mut();
         let Some(state) = state.as_mut() else {
-            return (None, None);
+            return PendingMouseEvents::default();
         };
         if cancel {
             state.hold.cancel();
+            state.trace_press_at = None;
         }
         state.posted = false;
-        (state.dismiss.take(), state.show.take())
+        std::mem::take(&mut state.pending)
     })
 }
 
 fn install_hook() -> Option<Hook> {
-    Hook::install()
-        .map_err(|error| log::error!("安装右键鼠标 Hook 失败：{error}"))
-        .ok()
+    match Hook::install() {
+        Ok(hook) => {
+            log::info!("已注册 Windows 全局鼠标 Hook");
+            Some(hook)
+        }
+        Err(error) => {
+            log::error!("安装右键鼠标 Hook 失败：{error}");
+            None
+        }
+    }
 }

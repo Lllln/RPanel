@@ -100,7 +100,7 @@ impl Popup {
             return Ok(None);
         };
         if let Some(foreground) = trigger.foreground
-            && !can_show(foreground, point, monitor.rcMonitor)
+            && !can_show(foreground, monitor.rcMonitor)
         {
             return Ok(None);
         }
@@ -141,6 +141,7 @@ impl Popup {
         }
 
         set_cloaked(self.hwnd, false)?;
+        log::debug!("已显示悬浮面板");
         self.bounds(generation).map(Some)
     }
 
@@ -215,44 +216,36 @@ fn monitor_at(point: Point) -> Option<MONITORINFO> {
     ok.then_some(monitor)
 }
 
-fn can_show(source: usize, point: Point, monitor: RECT) -> bool {
+fn can_show(source: usize, monitor: RECT) -> bool {
     // SAFETY: 这里只读取当前桌面上窗口、进程和线程状态。每个查询失败时取消弹出。
     unsafe {
-        let foreground = GetForegroundWindow();
-        if foreground.is_invalid() || foreground.0 as usize != source {
-            log::debug!("跳过弹出：前台窗口已切换");
+        let source = HWND(source as *mut c_void);
+        let mut process_id = 0;
+        let thread_id = GetWindowThreadProcessId(source, Some(&mut process_id));
+        if thread_id == 0 || process_id == GetCurrentProcessId() {
+            log::debug!("跳过弹出：来源窗口已关闭或属于 RPanel");
             return false;
         }
-        let mut process_id = 0;
-        let thread_id = GetWindowThreadProcessId(foreground, Some(&mut process_id));
-        if thread_id == 0 || process_id == GetCurrentProcessId() {
+        // 右键菜单可能改变当前窗口或光标命中窗口，使用按下时的来源并验证前台应用。
+        let mut active_process = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut active_process));
+        if active_process != process_id {
+            log::debug!("跳过弹出：前台应用已切换");
             return false;
         }
         let mut gui = GUITHREADINFO {
             cbSize: size_of::<GUITHREADINFO>() as u32,
             ..Default::default()
         };
-        if GetGUIThreadInfo(thread_id, &mut gui).is_err()
-            || gui.flags.0 & (GUI_INMOVESIZE | GUI_SYSTEMMENUMODE).0 != 0
+        if GetGUIThreadInfo(thread_id, &mut gui).is_ok()
+            && gui.flags.0 & (GUI_INMOVESIZE | GUI_SYSTEMMENUMODE).0 != 0
         {
-            log::debug!("跳过弹出：前台线程不可用、正在移动窗口或操作系统菜单");
-            return false;
-        }
-        let root = GetAncestor(foreground, GA_ROOTOWNER);
-        let hit = WindowFromPoint(POINT {
-            x: point.x,
-            y: point.y,
-        });
-        // 原应用可能在我们处理松开事件前弹出菜单，命中同线程的原生菜单仍是同一次手势。
-        let hits_current_menu = gui.flags.0 & (GUI_INMENUMODE | GUI_POPUPMENUMODE).0 != 0
-            && is_native_menu(hit, thread_id);
-        if hit.is_invalid() || (GetAncestor(hit, GA_ROOTOWNER) != root && !hits_current_menu) {
-            log::debug!("跳过弹出：光标下的窗口不属于本次手势来源");
+            log::debug!("跳过弹出：正在移动窗口或操作系统菜单");
             return false;
         }
         let mut rect = RECT::default();
-        if GetWindowRect(foreground, &mut rect).is_err()
-            || (!IsZoomed(foreground).as_bool()
+        if GetWindowRect(source, &mut rect).is_err()
+            || (!IsZoomed(source).as_bool()
                 && rect.left <= monitor.left
                 && rect.top <= monitor.top
                 && rect.right >= monitor.right
@@ -266,16 +259,6 @@ fn can_show(source: usize, point: Point, monitor: RECT) -> bool {
             log::debug!("跳过弹出：前台进程已提权或权限无法读取");
         }
         allowed
-    }
-}
-
-fn is_native_menu(hwnd: HWND, owner_thread: u32) -> bool {
-    let mut class = [0; 16];
-    // SAFETY: 查询当前光标命中的窗口，类名输出缓冲区在调用期间有效。
-    unsafe {
-        GetWindowThreadProcessId(hwnd, None) == owner_thread
-            && GetClassNameW(hwnd, &mut class) == 6
-            && class[..6] == *windows::core::w!("#32768").as_wide()
     }
 }
 

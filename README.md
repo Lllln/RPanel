@@ -8,7 +8,7 @@ RPanel 是面向 Windows 10 / 11 的 Rust 桌面工具，阶段 2 也提供 macO
 
 原型放行右键事件。长按时允许同一应用的原生上下文菜单与 RPanel 面板同时出现，原生菜单可能先接收点击。进入系统菜单、正在移动窗口、处于全屏或提权应用、前台目标切换时跳过弹出。选区读取、自动复制、编辑窗口和备用热键由后续阶段实现。
 
-从托盘选「预览『查看Json』」，或运行 `cargo run --locked -- --preview`，可以单独检查面板的显示与点击。若预览能显示而长按无效，可关闭旧实例，在 PowerShell 中设置 `$env:RUST_LOG = 'rpanel=debug'` 后运行 `cargo run --locked`，查看是否检测到了长按以及窗口检查结果。
+从托盘选「预览『查看Json』」，或运行 `cargo run --locked -- --preview`，可以单独检查面板的显示与点击。若预览能显示而长按无效，可关闭旧实例，在 PowerShell 中设置 `$env:RUST_LOG = 'rpanel=debug'` 后运行 `cargo run --locked`。Windows 调试版会输出 Hook 注册结果、右键按下与松开、按住的毫秒数、是否判定为长按，以及面板显示或跳过的原因。诊断日志不记录鼠标坐标或应用内容。
 
 本仓库通过 `rust-toolchain.toml` 锁定 Rust 1.100.0。macOS arm64 已通过 `cargo fmt --check`、`cargo test --locked` 的 7 项测试和 Clippy。安装 `x86_64-pc-windows-msvc` 标准库后，该目标的 `cargo check` 和 Clippy 也已通过。这些检查覆盖阈值、取消、时间戳回绕和工作区定位。Windows 可执行文件链接与桌面交互仍待验证。
 
@@ -51,7 +51,7 @@ macOS arm64 已运行预览，确认浅色边框和中文标签正常显示，�
 
 [Microsoft 对低级 Hook 的建议](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc) · [Raw Input](https://learn.microsoft.com/en-us/windows/win32/inputdev/using-raw-input) · [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
 
-**原应用可能同时响应长按或弹出自己的右键菜单。** 原型用 `GetGUIThreadInfo` 检查移动窗口、系统菜单和当前应用的上下文菜单。显示面板时允许命中同线程的原生上下文菜单窗口。原生菜单有可能先接收点击，可先按 Esc 关闭原应用菜单。支持全局停用，按应用排除属于后续计划。遇到可识别的独占全屏、权限边界或目标不明时跳过触发。首版按普通用户权限运行，游戏、管理员窗口、UAC 安全桌面和受保护应用不列为自动集成支持范围。全屏和应用识别属于尽力而为，特殊应用可关闭监听。[GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getguithreadinfo) · [GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) · [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey) · [UI Automation 权限说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview)
+**原应用可能同时响应长按或弹出自己的右键菜单。** 原型保留按下时的来源窗口，用进程标识校验前台应用，并通过 `GetGUIThreadInfo` 检查窗口移动和系统菜单。源应用的上下文菜单可能抢先接收点击，可按 Esc 关闭。支持全局停用，按应用排除属于后续计划。遇到可识别的独占全屏、权限边界或目标不明时跳过触发。首版按普通用户权限运行，游戏、管理员窗口、UAC 安全桌面和受保护应用不列为自动集成支持范围。全屏和应用识别属于尽力而为，特殊应用可关闭监听。[GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getguithreadinfo) · [GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) · [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey) · [UI Automation 权限说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview)
 
 ## 悬浮菜单、焦点与多显示器
 

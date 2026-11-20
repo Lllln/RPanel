@@ -9,7 +9,12 @@ mod ui;
 
 #[cfg(any(windows, target_os = "macos"))]
 fn main() -> std::process::ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("rpanel=info"))
+    let default_filter = if cfg!(all(windows, debug_assertions)) {
+        "rpanel=debug"
+    } else {
+        "rpanel=info"
+    };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .init();
 
     if let Err(error) = app::run() {
