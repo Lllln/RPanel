@@ -12,6 +12,19 @@ RPanel 是面向 Windows 10 / 11 的 Rust 桌面工具，阶段 2 也提供 macO
 
 Windows 实机先对照关闭和启用监听时的短按、双击及拖动行为，再分别检查阈值内外、原生菜单冲突、长按松开后焦点归属、菜单点击和外部点击。最后覆盖托盘切换与退出、触控板、混合 DPI 和外接屏负坐标；记录系统与应用版本。
 
+### Windows 编译与打包
+
+在装有 Rust 和 MSVC C++ Build Tools 的 Windows PowerShell 中，从项目根目录执行所需命令。
+
+```powershell
+cargo run --locked                                  # 编译并运行调试版
+cargo build --locked                                # 只编译调试版
+cargo build --release --locked --target x86_64-pc-windows-msvc  # 只编译 Release
+.\scripts\build-windows.ps1                         # 编译并打包 Windows x64 Release
+```
+
+打包脚本仅在构建时启用静态 C 运行库链接。生成的单文件位于 `target/x86_64-pc-windows-msvc/release/rpanel.exe`，`dist/rpanel-windows-x64.zip` 中仅含这一个文件。发布前仍需在干净的 Windows 上验证运行库依赖和双击启动。[Rust CRT 链接说明](https://doc.rust-lang.org/stable/reference/linkage.html#static-and-dynamic-c-runtimes)
+
 ### 在 macOS 测试
 
 在 macOS 桌面运行 `cargo run --locked`，从菜单栏的 RPanel 图标打开「预览『查看Json』」可以直接测试面板。也可运行 `cargo run --locked -- --preview` 在启动时预览，或在其他应用里按住鼠标右键至少 500 ms 后松开。菜单栏图标提供监听开关和退出。点击面板里的「查看Json」会关闭面板并写日志，本阶段未接入选区、剪贴板或 JSON 编辑。
