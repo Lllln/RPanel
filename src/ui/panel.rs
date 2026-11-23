@@ -23,11 +23,9 @@ pub fn configure(ctx: &egui::Context) {
         fonts
             .font_data
             .insert(name.clone(), Arc::new(FontData::from_owned(cjk)));
-        fonts
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .push(name);
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push(name.clone());
+        }
         ctx.set_fonts(fonts);
     } else {
         log::warn!("没有找到系统中文字体，原型菜单中文可能无法正常显示");
@@ -54,18 +52,25 @@ fn system_cjk_font() -> Option<Vec<u8>> {
         .find_map(|name| fs::read(font_dir.join(name)).ok())
 }
 
-pub fn show(ui: &mut egui::Ui) -> bool {
+pub fn show(ui: &mut egui::Ui, reading: bool) -> bool {
     Frame::new()
         .fill(Color32::WHITE)
         .stroke(Stroke::new(1.0, Color32::from_rgb(221, 224, 229)))
         .corner_radius(12)
         .inner_margin(7)
         .show(ui, |ui| {
-            let label = RichText::new("查看Json")
-                .size(14.0)
-                .color(Color32::from_rgb(29, 29, 31));
-            ui.add(egui::Button::new(label).min_size(egui::vec2(ui.available_width(), 36.0)))
-                .clicked()
+            let label = RichText::new(if reading {
+                "读取选区…"
+            } else {
+                "查看Json"
+            })
+            .size(14.0)
+            .color(Color32::from_rgb(29, 29, 31));
+            ui.add_enabled(
+                !reading,
+                egui::Button::new(label).min_size(egui::vec2(ui.available_width(), 36.0)),
+            )
+            .clicked()
         })
         .inner
 }

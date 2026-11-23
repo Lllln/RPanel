@@ -28,7 +28,7 @@ use windows::{
     core::{BOOL, Error, Result},
 };
 
-use super::{Trigger, mouse::WindowSource};
+use super::{Clipboard, Trigger, mouse::WindowSource};
 use crate::platform::PanelBounds;
 
 const SUBCLASS_ID: usize = 1;
@@ -86,11 +86,16 @@ impl Popup {
         })
     }
 
+    pub fn clipboard(&self) -> Clipboard {
+        Clipboard::new(self.hwnd)
+    }
+
     pub fn show(
         &self,
         trigger: Trigger,
         size: [u32; 2],
         generation: u64,
+        before_show: impl FnOnce(),
     ) -> Result<Option<PanelBounds>> {
         let point = trigger.point;
         let Some(monitor) = monitor_at(point) else {
@@ -126,6 +131,7 @@ impl Popup {
 
             let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, scale(24), scale(24));
             set_region(self.hwnd, region)?;
+            before_show();
             SetWindowPos(
                 self.hwnd,
                 Some(HWND_TOPMOST),
@@ -216,13 +222,16 @@ fn monitor_at(point: Point) -> Option<MONITORINFO> {
 fn can_show(source: WindowSource, monitor: RECT) -> bool {
     // SAFETY: 这里只查询当前桌面上的窗口和 GUI 线程状态，输出缓冲区在调用期间有效。
     unsafe {
-        let hwnd = HWND(source.hwnd as *mut c_void);
-        let mut process_id = 0;
-        let thread_id = GetWindowThreadProcessId(hwnd, Some(&mut process_id));
-        if thread_id != source.thread_id || process_id != source.process_id {
+        let hwnd = source.window();
+        if WindowSource::from_window(hwnd) != Some(source) {
             log::debug!("跳过弹出：来源窗口已关闭或更换");
             return false;
         }
+        let WindowSource {
+            process_id,
+            thread_id,
+            ..
+        } = source;
         if process_id == GetCurrentProcessId() {
             log::debug!("跳过弹出：右键按在 RPanel 自己的窗口（PID {process_id}）");
             return false;

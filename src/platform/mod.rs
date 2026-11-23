@@ -1,12 +1,14 @@
 #[cfg(target_os = "macos")]
 mod macos;
+mod selection;
 #[cfg(windows)]
 mod windows;
 
 #[cfg(target_os = "macos")]
-pub use macos::{MouseListener, Popup, Trigger, configure};
+pub use macos::{Clipboard, MouseListener, Popup, Trigger, configure};
+pub use selection::{Selection, SelectionRequest, SelectionResult};
 #[cfg(windows)]
-pub use windows::{MouseListener, Popup, Trigger, configure};
+pub use windows::{Clipboard, MouseListener, Popup, Trigger, configure};
 
 #[derive(Clone, Copy)]
 pub struct PanelBounds {

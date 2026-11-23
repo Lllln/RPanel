@@ -22,11 +22,11 @@ use crate::platform::{MouseEvent, PanelBounds};
 #[derive(Clone, Copy)]
 pub struct Trigger {
     pub point: Point,
-    pub(super) source: Option<WindowSource>,
+    pub(in crate::platform) source: Option<WindowSource>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct WindowSource {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::platform) struct WindowSource {
     pub hwnd: usize,
     pub thread_id: u32,
     pub process_id: u32,
@@ -42,14 +42,23 @@ impl WindowSource {
             }
             let root = GetAncestor(hit, GA_ROOT);
             let hwnd = if root.is_invalid() { hit } else { root };
-            let mut process_id = 0;
-            let thread_id = GetWindowThreadProcessId(hwnd, Some(&mut process_id));
-            (thread_id != 0).then_some(Self {
-                hwnd: hwnd.0 as usize,
-                thread_id,
-                process_id,
-            })
+            Self::from_window(hwnd)
         }
+    }
+
+    pub(super) fn from_window(hwnd: HWND) -> Option<Self> {
+        let mut process_id = 0;
+        // SAFETY: 只查询 HWND 当前的身份，失效时返回零。
+        let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+        (thread_id != 0).then_some(Self {
+            hwnd: hwnd.0 as usize,
+            thread_id,
+            process_id,
+        })
+    }
+
+    pub(super) fn window(self) -> HWND {
+        HWND(self.hwnd as *mut _)
     }
 }
 

@@ -1,6 +1,8 @@
+mod clipboard;
 mod mouse;
 mod popup;
 
+pub use clipboard::Clipboard;
 pub use mouse::{MouseListener, Trigger};
 pub use popup::Popup;
 

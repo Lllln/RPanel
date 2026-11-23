@@ -6,7 +6,10 @@ use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::RawWindowHandle;
 use rpanel::{gesture::Point, placement::axis_position};
 
-use super::mouse::{Trigger, appkit_point, frontmost_pid};
+use super::{
+    Clipboard,
+    mouse::{Trigger, appkit_point, frontmost_pid},
+};
 use crate::platform::PanelBounds;
 
 pub struct Popup {
@@ -41,11 +44,16 @@ impl Popup {
         })
     }
 
+    pub fn clipboard(&self) -> Clipboard {
+        Clipboard
+    }
+
     pub fn show(
         &self,
         trigger: Trigger,
         size: [u32; 2],
         generation: u64,
+        before_show: impl FnOnce(),
     ) -> io::Result<Option<PanelBounds>> {
         if let Some(pid) = trigger.foreground
             && Some(pid) != frontmost_pid()
@@ -75,6 +83,7 @@ impl Popup {
         );
         self.window.setFrame_display(frame, false);
         // 排在当前窗口层级前方，不调用 makeKeyAndOrderFront 或 activate。
+        before_show();
         self.window.orderFrontRegardless();
         Ok(Some(bounds_from_frame(self.window.frame(), generation)))
     }
