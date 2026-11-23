@@ -5,8 +5,8 @@ use rpanel::{gesture::Point, placement::axis_position};
 use windows::{
     Win32::{
         Foundation::{
-            CloseHandle, E_FAIL, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
-            SetLastError, WIN32_ERROR, WPARAM,
+            E_FAIL, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WIN32_ERROR,
+            WPARAM,
         },
         Graphics::{
             Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute},
@@ -15,10 +15,7 @@ use windows::{
                 MONITORINFO, MonitorFromPoint, SetWindowRgn,
             },
         },
-        Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
-        System::Threading::{
-            GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
-        },
+        System::Threading::GetCurrentProcessId,
         UI::{
             HiDpi::{
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
@@ -217,7 +214,7 @@ fn monitor_at(point: Point) -> Option<MONITORINFO> {
 }
 
 fn can_show(source: WindowSource, monitor: RECT) -> bool {
-    // SAFETY: 这里只读取当前桌面上窗口、进程和线程状态。每个查询失败时取消弹出。
+    // SAFETY: 这里只查询当前桌面上的窗口和 GUI 线程状态，输出缓冲区在调用期间有效。
     unsafe {
         let hwnd = HWND(source.hwnd as *mut c_void);
         let mut process_id = 0;
@@ -251,51 +248,9 @@ fn can_show(source: WindowSource, monitor: RECT) -> bool {
             log::debug!("跳过弹出：右键目标窗口不可用或处于全屏（PID {process_id}）");
             return false;
         }
-        match is_elevated(process_id) {
-            Ok(false) => true,
-            Ok(true) => {
-                log::debug!("跳过弹出：右键目标进程已提权（PID {process_id}）");
-                false
-            }
-            Err(error) => {
-                log::debug!("跳过弹出：读取右键目标进程权限失败（PID {process_id}）：{error}");
-                false
-            }
-        }
     }
-}
-
-struct OwnedHandle(HANDLE);
-
-impl Drop for OwnedHandle {
-    fn drop(&mut self) {
-        // SAFETY: 只持有成功打开的独占句柄，并在此处释放一次。
-        let _ = unsafe { CloseHandle(self.0) };
-    }
-}
-
-fn is_elevated(process_id: u32) -> Result<bool> {
-    // SAFETY: 仅取得查询权限，输出缓冲区与 TokenElevation 的类型和长度一致。
-    unsafe {
-        let process = OwnedHandle(OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION,
-            false,
-            process_id,
-        )?);
-        let mut token = HANDLE::default();
-        OpenProcessToken(process.0, TOKEN_QUERY, &mut token)?;
-        let token = OwnedHandle(token);
-        let mut info = TOKEN_ELEVATION::default();
-        let mut written = 0;
-        GetTokenInformation(
-            token.0,
-            TokenElevation,
-            Some(std::ptr::from_mut(&mut info).cast()),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut written,
-        )?;
-        Ok(info.TokenIsElevated != 0)
-    }
+    // 悬浮面板只操作 RPanel 自己的窗口，目标进程的权限由后续选区读取处理。
+    true
 }
 
 unsafe extern "system" fn popup_proc(

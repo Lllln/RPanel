@@ -6,13 +6,13 @@ RPanel 是面向 Windows 10 / 11 的 Rust 桌面工具，阶段 2 也提供 macO
 
 在装有 Rust 和 MSVC C++ 构建工具的 Windows x64 环境运行 `cargo run --locked`。原型启动后驻留在系统托盘。对前台窗口长按右键至少 500 ms 后松开，满足手势条件时会看到浅色「查看Json」按钮。点击按钮只关闭原型面板并写一条日志。右键托盘图标可停用或重新启用「监听右键长按」，以及退出程序。运行 `cargo run --locked -- --hold-ms 700` 可用 700 ms 取代默认阈值。
 
-原型放行右键事件。长按时，RPanel 根据鼠标按下时命中的窗口判断是否弹出，原应用的上下文菜单仍可同时出现。遇到失效的目标窗口、系统菜单、正在移动的窗口、全屏或提权应用时会跳过弹出。选区读取、自动复制、编辑窗口和备用热键由后续阶段实现。
+原型放行右键事件。长按时，RPanel 根据鼠标按下时命中的窗口判断是否弹出，原应用的上下文菜单仍可同时出现。遇到失效的目标窗口、系统菜单、正在移动的窗口或全屏时会跳过弹出。普通窗口和当前桌面上的管理员窗口使用相同的弹出条件。选区读取、自动复制、编辑窗口和备用热键由后续阶段实现。
 
 从托盘选「预览『查看Json』」，或运行 `cargo run --locked -- --preview`，可以单独检查面板的显示与点击。若预览能显示而长按无效，可关闭旧实例，在 PowerShell 中设置 `$env:RUST_LOG = 'rpanel=debug'` 后运行 `cargo run --locked`。Windows 调试版会输出 Hook 注册结果、右键按下与松开、按住的毫秒数、是否判定为长按，以及面板显示或跳过的原因。诊断日志不记录鼠标坐标或应用内容。
 
 本仓库通过 `rust-toolchain.toml` 锁定 Rust 1.100.0。macOS arm64 已通过 `cargo fmt --check`、`cargo test --locked` 的 7 项测试和 Clippy。安装 `x86_64-pc-windows-msvc` 标准库后，该目标的 `cargo check` 和 Clippy 也已通过。这些检查覆盖阈值、取消、时间戳回绕和工作区定位。Windows 可执行文件链接与桌面交互仍待验证。
 
-Windows 实机先对照关闭和启用监听时的短按、双击及拖动行为，再分别检查阈值内外、原生菜单冲突、长按松开后焦点归属、菜单点击和外部点击。最后覆盖托盘切换与退出、触控板、混合 DPI 和外接屏负坐标；记录系统与应用版本。
+Windows 实机先对照关闭和启用监听时的短按、双击及拖动行为，再以普通权限运行 RPanel，分别在普通窗口和以管理员身份运行的窗口检查长按弹出、原生菜单冲突、焦点归属、面板点击和外部点击。最后覆盖托盘切换与退出、触控板、混合 DPI 和外接屏负坐标，并记录系统与应用版本。
 
 ### Windows 编译与打包
 
@@ -51,7 +51,7 @@ macOS arm64 已运行预览，确认浅色边框和中文标签正常显示，�
 
 [Microsoft 对低级 Hook 的建议](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc) · [Raw Input](https://learn.microsoft.com/en-us/windows/win32/inputdev/using-raw-input) · [SendInput](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
 
-**原应用可能同时响应长按或弹出自己的右键菜单。** 原型保留按下时的来源窗口，通过 `GetGUIThreadInfo` 检查窗口移动和系统菜单。RPanel 或其他窗口仍在前台时，只要鼠标命中的目标有效，手势仍可触发。源应用的上下文菜单可能抢先接收点击，可按 Esc 关闭。支持全局停用，按应用排除属于后续计划。遇到可识别的独占全屏、权限边界或目标不明时跳过触发。调试日志会分别报告已确认的提权状态和权限查询错误。首版按普通用户权限运行，游戏、管理员窗口、UAC 安全桌面和受保护应用不列为自动集成支持范围。全屏和应用识别属于尽力而为，特殊应用可关闭监听。[GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getguithreadinfo) · [GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) · [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey) · [UI Automation 权限说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview)
+**原应用可能同时响应长按或弹出自己的右键菜单。** 原型保留按下时的来源窗口，通过 `GetGUIThreadInfo` 检查窗口移动和系统菜单。RPanel 或其他窗口仍在前台时，只要鼠标命中的目标有效，手势仍可触发。源应用的上下文菜单可能抢先接收点击，可按 Esc 关闭。支持全局停用，按应用排除属于后续计划。遇到可识别的独占全屏或目标不明时跳过触发。RPanel 以普通用户权限显示自己的面板。后续跨应用读取选区时遵循 UI Automation 的权限限制。全屏和应用识别属于尽力而为，特殊应用可关闭监听。[GetGUIThreadInfo](https://learn.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getguithreadinfo) · [GUITHREADINFO](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-guithreadinfo) · [RegisterHotKey](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey) · [UI Automation 权限说明](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-securityoverview)
 
 ## 悬浮菜单、焦点与多显示器
 
