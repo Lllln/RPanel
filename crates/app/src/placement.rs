@@ -3,6 +3,8 @@ use input_hook::ScreenPoint;
 
 pub const PANEL_WIDTH: i32 = 680;
 pub const PANEL_HEIGHT: i32 = 480;
+pub const QUICK_MENU_WIDTH: i32 = 152;
+pub const QUICK_MENU_HEIGHT: i32 = 48;
 pub const EDGE_MARGIN: i32 = 16;
 
 /// Logical rectangle representing a monitor work area or floating panel.
@@ -14,17 +16,35 @@ pub struct ScreenRect {
     pub height: i32,
 }
 
-/// Resolve the target display and clamped floating panel bounds for an optional cursor position.
+/// Resolve the target display and clamped bounds for the floating JSON editor panel.
 pub fn resolve_panel_placement(
     cursor: Option<ScreenPoint>,
     cx: &App,
 ) -> (Option<DisplayId>, Bounds<Pixels>) {
-    let panel_size: Size<Pixels> = size(px(PANEL_WIDTH as f32), px(PANEL_HEIGHT as f32));
+    resolve_window_placement(cursor, PANEL_WIDTH, PANEL_HEIGHT, 14, cx)
+}
+
+/// Resolve the target display and clamped bounds for the compact "查看 JSON" quick menu.
+pub fn resolve_quick_menu_placement(
+    cursor: Option<ScreenPoint>,
+    cx: &App,
+) -> (Option<DisplayId>, Bounds<Pixels>) {
+    resolve_window_placement(cursor, QUICK_MENU_WIDTH, QUICK_MENU_HEIGHT, 10, cx)
+}
+
+fn resolve_window_placement(
+    cursor: Option<ScreenPoint>,
+    width: i32,
+    height: i32,
+    cursor_offset: i32,
+    cx: &App,
+) -> (Option<DisplayId>, Bounds<Pixels>) {
+    let win_size: Size<Pixels> = size(px(width as f32), px(height as f32));
 
     let Some(raw_cursor) = cursor else {
         let primary = cx.primary_display();
         let display_id = primary.as_ref().map(|d| d.id());
-        let bounds = Bounds::centered(display_id, panel_size, cx);
+        let bounds = Bounds::centered(display_id, win_size, cx);
         return (display_id, bounds);
     };
 
@@ -37,12 +57,12 @@ pub fn resolve_panel_placement(
             let b = display.bounds();
             let left = f32::from(b.origin.x).round() as i32;
             let top = f32::from(b.origin.y).round() as i32;
-            let width = f32::from(b.size.width).round() as i32;
-            let height = f32::from(b.size.height).round() as i32;
+            let w = f32::from(b.size.width).round() as i32;
+            let h = f32::from(b.size.height).round() as i32;
             logical_cursor.x >= left
-                && logical_cursor.x < left + width
+                && logical_cursor.x < left + w
                 && logical_cursor.y >= top
-                && logical_cursor.y < top + height
+                && logical_cursor.y < top + h
         })
         .or_else(|| cx.primary_display());
 
@@ -57,19 +77,20 @@ pub fn resolve_panel_placement(
         let (x, y) = place_near_cursor(
             logical_cursor.x,
             logical_cursor.y,
-            PANEL_WIDTH,
-            PANEL_HEIGHT,
+            width,
+            height,
             work_area,
             EDGE_MARGIN,
+            cursor_offset,
         );
-        let bounds = Bounds::new(Point::new(px(x as f32), px(y as f32)), panel_size);
+        let bounds = Bounds::new(Point::new(px(x as f32), px(y as f32)), win_size);
         return (Some(display.id()), bounds);
     }
 
-    (None, Bounds::centered(None, panel_size, cx))
+    (None, Bounds::centered(None, win_size, cx))
 }
 
-/// Compute an in-bounds top-left coordinate for a floating panel anchored near the cursor.
+/// Compute an in-bounds top-left coordinate for a floating window anchored near the cursor.
 pub fn place_near_cursor(
     cursor_x: i32,
     cursor_y: i32,
@@ -77,8 +98,8 @@ pub fn place_near_cursor(
     panel_height: i32,
     work_area: ScreenRect,
     margin: i32,
+    offset: i32,
 ) -> (i32, i32) {
-    let offset = 14;
     let max_x = (work_area.x + work_area.width - panel_width - margin).max(work_area.x + margin);
     let max_y = (work_area.y + work_area.height - panel_height - margin).max(work_area.y + margin);
 
@@ -112,7 +133,7 @@ mod tests {
             width: 1920,
             height: 1080,
         };
-        let (x, y) = place_near_cursor(1900, 1060, 680, 480, work, 16);
+        let (x, y) = place_near_cursor(1900, 1060, 680, 480, work, 16, 14);
         assert!(x >= 16 && x + 680 <= 1904);
         assert!(y >= 16 && y + 480 <= 1064);
     }
@@ -125,7 +146,7 @@ mod tests {
             width: 1920,
             height: 1080,
         };
-        let (x, y) = place_near_cursor(-1910, 50, 680, 480, work, 16);
+        let (x, y) = place_near_cursor(-1910, 50, 680, 480, work, 16, 14);
         assert!(x >= -1904 && x + 680 <= -16);
         assert!(y >= 16 && y + 480 <= 1064);
     }

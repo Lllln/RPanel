@@ -258,6 +258,9 @@ impl Render for FloatingPanel {
             on_copy_hide: Box::new(
                 cx.listener(|this, _, window, cx| this.copy_and_hide(window, cx)),
             ),
+            on_close: Box::new(cx.listener(|_, _, window, _| {
+                window.remove_window();
+            })),
         };
 
         let on_jump_error = cx.listener(|this, _, window, cx| this.jump_to_error(window, cx));
@@ -284,7 +287,7 @@ impl Render for FloatingPanel {
             .text_color(rgb(palette::INK_PRIMARY))
             .border_1()
             .border_color(rgb(palette::BORDER_OUTER))
-            .rounded(px(14.0))
+            .rounded(px(12.0))
             .overflow_hidden()
             .child(render_toolbar(
                 self.doc.source_format,

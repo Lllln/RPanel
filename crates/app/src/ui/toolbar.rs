@@ -17,6 +17,7 @@ pub struct ToolbarCallbacks {
     pub on_unescape: ClickHandler,
     pub on_reload: ClickHandler,
     pub on_copy_hide: ClickHandler,
+    pub on_close: ClickHandler,
 }
 
 /// Restrained Apple-style top toolbar with drag handle, detected format pill, and quick actions.
@@ -143,6 +144,14 @@ pub fn render_toolbar(
                         .label("Copy")
                         .tooltip("Copy JSON and hide panel (Ctrl/Cmd+Enter)")
                         .on_click(callbacks.on_copy_hide),
+                )
+                .child(
+                    Button::new("btn-close")
+                        .custom(apple_subtle)
+                        .xsmall()
+                        .label("×")
+                        .tooltip("Hide panel (Esc)")
+                        .on_click(callbacks.on_close),
                 ),
         )
 }

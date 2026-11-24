@@ -28,16 +28,16 @@ impl TrayController {
         initial_hold_ms: u64,
         command_tx: Sender<TrayCommand>,
     ) -> Result<Self, String> {
-        let open_item = MenuItem::new("Open JSON Panel (Clipboard)", true, None);
-        let enabled_item = CheckMenuItem::new("Enable Right-Click Hold", true, true, None);
+        let open_item = MenuItem::new("打开 JSON 编辑器（剪贴板）", true, None);
+        let enabled_item = CheckMenuItem::new("启用右键长按拦截", true, true, None);
 
-        let threshold_menu = Submenu::new("Long-Press Threshold", true);
+        let threshold_menu = Submenu::new("长按时长阈值", true);
         let mut threshold_items = Vec::with_capacity(THRESHOLD_PRESETS_MS.len());
         let mut threshold_ids = Vec::with_capacity(THRESHOLD_PRESETS_MS.len());
 
         for ms in THRESHOLD_PRESETS_MS {
             let label = if ms == 300 {
-                format!("{ms} ms (Default)")
+                format!("{ms} ms（默认）")
             } else {
                 format!("{ms} ms")
             };
@@ -49,7 +49,7 @@ impl TrayController {
             threshold_items.push((ms, item));
         }
 
-        let quit_item = MenuItem::new("Quit RPanel", true, None);
+        let quit_item = MenuItem::new("退出 RPanel", true, None);
 
         let menu = Menu::new();
         menu.append(&open_item)
