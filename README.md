@@ -1,16 +1,16 @@
 # RPanel
 
-RPanel 是面向 Windows 10 / 11 的 Rust 桌面工具，也提供 macOS 交互原型。在 Windows 选中文本后长按右键，松开并点击光标附近的「查看Json」，即可将选中原文复制到剪贴板并打开可编辑窗口。窗口计划支持格式化、对象和数组的折叠与展开、语法错误定位及压缩复制。
+RPanel 是面向 Windows 10 / 11 的 Rust 桌面工具，也提供 macOS 交互原型。在 Windows 选中文本后长按右键，松开并点击光标附近的「查看Json」，即可将选中原文复制到剪贴板并打开编辑窗口。编辑器支持 JSON 格式化、语法着色、对象与数组折叠、错误跳转和压缩复制。
 
-## 阶段 3 选区原型
+## 阶段 4 JSON 编辑器
 
-在装有 Rust 和 MSVC C++ 构建工具的 Windows x64 环境运行 `cargo run --locked`。程序驻留在系统托盘。对前台窗口长按右键至少 500 ms 后松开，再点击「查看Json」。读取成功时编辑窗口显示选中原文和复制结果。无法读取时，窗口说明原因，可点击「粘贴」、按 Ctrl+V 或直接输入。右键托盘图标可选择「手动粘贴文本」、切换监听或退出。运行 `cargo run --locked -- --hold-ms 700` 可用 700 ms 取代默认阈值。
+在装有 Rust 和 MSVC C++ 构建工具的 Windows x64 环境运行 `cargo run --locked`。程序驻留在系统托盘。对前台窗口长按右键至少 500 ms 后松开，再点击「查看Json」。读取成功时编辑窗口先显示选中原文，后台尝试格式化。无法读取时，可点击「粘贴」、按 Ctrl+V 或直接输入。右键托盘图标可选择「手动粘贴文本」、切换监听或退出。运行 `cargo run --locked -- --hold-ms 700` 可用 700 ms 取代默认阈值。
 
 原型放行右键事件。长按时，RPanel 根据鼠标按下时命中的窗口判断是否弹出，原应用的上下文菜单仍可同时出现。遇到失效的目标窗口、系统菜单、正在移动的窗口或全屏时会跳过弹出。普通窗口和当前桌面上的管理员窗口使用相同的弹出条件。自动读取选区受 Windows UI Automation 的权限及控件支持情况限制。
 
 从托盘选「预览『查看Json』」，或运行 `cargo run --locked -- --preview`，可以单独检查面板和编辑窗口。若预览能显示而长按无效，可关闭旧实例，在 PowerShell 中设置 `$env:RUST_LOG = 'rpanel=debug'` 后运行 `cargo run --locked`。Windows 调试版会输出 Hook 注册、手势判定、面板显示及选区读取结果，诊断日志不记录鼠标坐标或应用内容。
 
-本仓库通过 `rust-toolchain.toml` 锁定 Rust 1.100.0。macOS arm64 已通过 `cargo fmt --check`、`cargo test --locked` 的 7 项测试和 Clippy。安装 `x86_64-pc-windows-msvc` 标准库后，该目标的 `cargo check` 和 Clippy 也已通过。这些检查覆盖阈值、取消、时间戳回绕和工作区定位。Windows 可执行文件链接与桌面交互仍待验证。
+本仓库通过 `rust-toolchain.toml` 锁定 Rust 1.100.0。macOS arm64 已通过 23 项测试和 Clippy，测试覆盖 JSON 校验、原始记号保留、换行修复、折叠、错误跳转和过期结果处理。`x86_64-pc-windows-msvc` 的 Release 编译检查和 Clippy 已通过。Windows 可执行文件链接与桌面交互仍待验证。
 
 Windows 实机先对照关闭和启用监听时的短按、双击及拖动行为，再以普通权限运行 RPanel，分别在普通窗口和以管理员身份运行的窗口检查长按弹出、原生菜单冲突、焦点归属、面板点击和外部点击。最后覆盖托盘切换与退出、触控板、混合 DPI 和外接屏负坐标，并记录系统与应用版本。
 
@@ -91,6 +91,10 @@ egui 负责绘制和交互，eframe 负责宿主窗口及渲染。`ViewportBuild
 - **换行处理**在首次打开和点击「格式化」时先按标准 JSON 解析。对象、数组等结构之间的 LF 和 CRLF 按正常空白处理。若解析失败，且能明确识别出双引号字符串中的真实换行，则尝试把 LF、CR 或 CRLF 分别写成 `\n`、`\r` 或 `\r\n`，保留字符串中的换行含义。完整重验通过后才应用修复，并提示「已转义字符串中的换行」。遇到引号不闭合、断在数字中的换行或多段独立 JSON 等情况，保留当前文本并显示原始错误位置。打开面板时已复制的原文仍保留原始换行。[RFC 8259 空白规则](https://www.rfc-editor.org/rfc/rfc8259#section-2) · [字符串规则](https://www.rfc-editor.org/rfc/rfc8259#section-7)
 - **压缩复制**以当前编辑内容为准，校验通过后把去掉无意义空白的单行 JSON 写入剪贴板。编辑区继续显示当前文本。输入无效时显示错误位置并保留剪贴板。格式化和压缩保留键顺序、重复键、数字字面量及字符串内容。
 
+处理上限为 4 MiB UTF-8，适用于校验输入和缩进结果。超限时编辑窗口保留文本，选区原文的首次复制仍按选区读取结果处理。语法着色限制为前 40,000 个记号，超过输入上限的文本使用普通颜色。编辑期间使用完整文本执行复制、剪切和撤销。格式化更新全文时重新展开折叠。
+
+可从托盘选择「手动粘贴文本」测试编辑器。粘贴带重复键和高精度数字的 JSON，用「格式化」检查缩进和原有字面量。收起嵌套数组后用「压缩复制」检查剪贴板仍含完整数组。把一个嵌套值改成 `@`，收起该区后点击底部行列，检查相关折叠自动展开且光标跳到错误位置。
+
 ## 线程与资源所有权
 
 | 线程 | 职责 |
@@ -98,7 +102,7 @@ egui 负责绘制和交互，eframe 负责宿主窗口及渲染。`ViewportBuild
 | GUI 主线程 | 运行一次 eframe/winit 事件循环，管理菜单、编辑窗口、设置和托盘动作的应用状态。收到应用事件后按需唤醒并重绘，无空闲轮询。 |
 | Windows 监听线程 | 独占 Hook 和阻塞式 Win32 消息循环，处理监听开关及备用 `WM_HOTKEY`。Hook 回调只更新轻量状态并保存必要的事件数据，避免日志、分配密集操作、阻塞等待和跨进程调用。回调投递线程消息后立刻放行，消息循环再投递有界应用事件并按需唤醒 GUI。禁用时清空候选并卸载 Hook。 |
 | UI Automation 工作线程 | 无窗口的 COM MTA 线程，持有并释放 UIA 接口。连接超时 250 ms，单次事务超时 350 ms，界面等待期限独立计算。至多一个请求在途，每次请求使用独立的结果通道。面板关闭或超时后丢弃接收端，慢 provider 的结果无法进入后续面板。 |
-| JSON 工作线程 | 阶段 4 引入，用有界队列处理校验、格式化和压缩，按输入版本返回结果或错误位置。首次复制原文与后台解析独立。「压缩复制」只使用本次动作对应的校验结果。 |
+| JSON 工作线程 | 通过有界队列处理校验、格式化和压缩，编辑器只采用当前文本及当前操作对应的结果。首次复制原文与后台解析独立。 |
 
 线程间只传递值和应用事件，COM 对象及窗口操作留在所属线程。退出时停止接收请求，撤销热键与 Hook，移除托盘图标，再关闭窗口和工作线程。测试慢 provider 的退出路径，确保 GUI 不因等待 COM 而卡住。FFI 封装在 `platform::windows`，每个 `unsafe` 说明指针有效期、句柄归属和回调约束。日志只记录阶段、错误码和耗时，选区及 JSON 内容留在内存，取消操作或关闭编辑窗口时按生命周期释放。[UI Automation 线程模型](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading) · [UI Automation 事务超时](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomation2-put_transactiontimeout) · [egui 请求重绘](https://docs.rs/egui/latest/egui/struct.Context.html#method.request_repaint)
 
@@ -132,6 +136,9 @@ RPanel/
     │       └── clipboard.rs
     └── ui/
         ├── mod.rs
+        ├── document.rs
+        ├── json_view.rs
+        ├── json_worker.rs
         ├── panel.rs
         ├── editor.rs
         └── settings.rs
@@ -144,7 +151,7 @@ RPanel/
 | Rust Stable / Edition 2024 | 阶段 2 在 Windows 构建机确定所选依赖要求的最小 Rust 版本，并提交 `Cargo.lock`。 |
 | `eframe` / `egui` | 同一版本系列，阶段 2 使用 `glow`，Windows 的启动和隐藏恢复待实机验证。原型从 Windows 字体目录加载中文字体回退，正式版需验证干净系统中的字体覆盖。 |
 | `windows` / `raw-window-handle` | Windows 专属，按实际使用启用 Win32 功能。前者用于鼠标、COM/UIA、窗口、托盘和剪贴板，后者用于提取 eframe 窗口句柄。 |
-| `serde_json` | 解析和格式化，保留默认递归保护。验证键顺序、重复键和高精度数字的语义后再定格式化策略，避免把可能改写值的输出标成无损格式化。 |
+| `serde` / `serde_json` | 校验 JSON，保留默认递归保护，以任意精度接受数字字面量。格式化和压缩通过原始记号生成文本，保留键顺序、重复键和原始数值写法。 |
 | `objc2` / `objc2-app-kit` / `objc2-foundation` / `block2` / `winit` | macOS 专用。使用类型化 AppKit 绑定注册鼠标监听，读取显示器工作区，控制 eframe 的原生窗口与应用激活策略。 |
 | `tray-icon` | 复用 Windows 系统托盘和 macOS 菜单栏状态项，面板隐藏期间可切换监听和退出。 |
 | `log` / `env_logger` | 记录关键状态和错误，阶段 2 输出到运行原型的终端，发布版日志位置在集成阶段定稿。跨线程通信用标准库，首版无需异步运行时。 |
