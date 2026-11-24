@@ -69,11 +69,10 @@ impl TrayController {
         let builder = TrayIconBuilder::new()
             .with_tooltip("RPanel — Right-Click Hold JSON Inspector")
             .with_menu(Box::new(menu));
-        let builder = if cfg!(target_os = "macos") {
-            builder.with_icon_templated(icon)
-        } else {
-            builder.with_icon(icon)
-        };
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_icon_templated(icon);
+        #[cfg(not(target_os = "macos"))]
+        let builder = builder.with_icon(icon);
         let tray = builder
             .build()
             .map_err(|e| format!("failed to build tray icon: {e}"))?;

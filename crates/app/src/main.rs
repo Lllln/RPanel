@@ -12,8 +12,8 @@ use std::time::Duration;
 use crossbeam_channel::unbounded;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{
-    ActivationPolicy, AnyWindowHandle, App, AppContext, Global, WindowBounds, WindowDecorations,
-    WindowKind, WindowOptions,
+    ActivationPolicy, AnyWindowHandle, App, AppContext, Global, QuitMode, WindowBounds,
+    WindowDecorations, WindowKind, WindowOptions,
 };
 use input_hook::{HookConfig, HookControl, HookError, HookEvent, HookHandle, ScreenPoint};
 use tracing::{error, info, warn};
@@ -70,7 +70,9 @@ fn main() {
         ..HookConfig::default()
     };
 
-    gpui_kit::application().run(move |cx| {
+    gpui_kit::application()
+        .with_quit_mode(QuitMode::Explicit)
+        .run(move |cx| {
         gpui_kit::init(cx);
         cx.set_activation_policy(ActivationPolicy::Accessory);
         Theme::change(ThemeMode::Light, None, cx);
