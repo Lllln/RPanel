@@ -17,7 +17,7 @@ $previousFlags = $env:CARGO_ENCODED_RUSTFLAGS
 Push-Location -LiteralPath $projectRoot
 try {
     $env:CARGO_ENCODED_RUSTFLAGS = '-Ctarget-feature=+crt-static'
-    & cargo build --locked --release --target $target --target-dir $targetDir --bin rpanel
+    & cargo build --locked --release -p rpanel --target $target --target-dir $targetDir --bin rpanel
     if ($LASTEXITCODE -ne 0) {
         throw "Cargo build failed (exit code $LASTEXITCODE)."
     }

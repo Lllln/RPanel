@@ -1,0 +1,54 @@
+#[cfg(target_os = "macos")]
+pub mod macos;
+
+#[cfg(windows)]
+pub mod windows;
+
+use crate::{CaptureResult, HookConfig, HookError, HookHandle};
+
+pub fn start_platform_hook(config: HookConfig) -> Result<HookHandle, HookError> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::start_hook(config)
+    }
+
+    #[cfg(windows)]
+    {
+        windows::start_hook(config)
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = config;
+        Err(HookError::UnsupportedPlatform)
+    }
+}
+
+pub fn capture_selection() -> Result<CaptureResult, HookError> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::capture_selection()
+    }
+
+    #[cfg(windows)]
+    {
+        windows::capture_selection()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Err(HookError::UnsupportedPlatform)
+    }
+}
+
+pub fn to_logical_point(point: crate::ScreenPoint) -> crate::ScreenPoint {
+    #[cfg(windows)]
+    {
+        windows::to_logical_point(point)
+    }
+
+    #[cfg(not(windows))]
+    {
+        point
+    }
+}
