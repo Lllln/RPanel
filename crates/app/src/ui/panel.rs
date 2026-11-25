@@ -5,6 +5,7 @@ use gpui_kit::{
     App, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
     ParentElement, Render, Styled, Subscription, Window, actions, div, px, rgb,
 };
+use input_hook::WindowRoundStyle;
 use json_engine::{SourceFormat, ValidationStatus};
 
 use crate::state::PanelDocumentState;
@@ -73,6 +74,7 @@ pub struct FloatingPanel {
     focus_handle: FocusHandle,
     editor: Entity<EditorState>,
     doc: PanelDocumentState,
+    round_style: WindowRoundStyle,
     opened_at: Instant,
     auto_hide_on_blur: bool,
     _subscriptions: Vec<Subscription>,
@@ -82,6 +84,7 @@ impl FloatingPanel {
     pub fn new(
         initial_raw: Option<String>,
         auto_hide_on_blur: bool,
+        round_style: WindowRoundStyle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -125,13 +128,18 @@ impl FloatingPanel {
             }
         });
 
+        let bounds_sub = cx.observe_window_bounds(window, |this, window, _cx| {
+            this.round_style = crate::apply_os_window_rounding(window, 10);
+        });
+
         Self {
             focus_handle: cx.focus_handle(),
             editor,
             doc,
+            round_style,
             opened_at: Instant::now(),
             auto_hide_on_blur,
-            _subscriptions: vec![editor_sub, activation_sub],
+            _subscriptions: vec![editor_sub, activation_sub, bounds_sub],
         }
     }
 
@@ -268,7 +276,7 @@ impl Render for FloatingPanel {
 
         let on_jump_error = cx.listener(|this, _, window, cx| this.jump_to_error(window, cx));
 
-        div()
+        let shell = div()
             .key_context("RPanel")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(|_, _: &HidePanel, window, _| {
@@ -288,10 +296,21 @@ impl Render for FloatingPanel {
             .size_full()
             .bg(rgb(palette::SURFACE_BG))
             .text_color(rgb(palette::INK_PRIMARY))
-            .border_1()
-            .border_color(rgb(palette::BORDER_OUTER))
-            .rounded(px(12.0))
-            .overflow_hidden()
+            .overflow_hidden();
+
+        let shell = match self.round_style {
+            WindowRoundStyle::NativeDwmRound => shell,
+            WindowRoundStyle::RegionClipped => shell
+                .border_1()
+                .border_color(rgb(palette::BORDER_OUTER))
+                .rounded(px(10.0)),
+            WindowRoundStyle::TransparentSurface => shell
+                .border_1()
+                .border_color(rgb(palette::BORDER_OUTER))
+                .rounded(px(12.0)),
+        };
+
+        shell
             .child(render_toolbar(
                 self.doc.source_format,
                 self.doc.feedback.as_deref(),

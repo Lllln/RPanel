@@ -186,3 +186,24 @@ pub fn is_remote_desktop_session() -> bool {
 pub fn install_native_crash_handler() {
     platform::install_native_crash_handler();
 }
+
+/// How the OS window frame handles rounded corners on the current platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowRoundStyle {
+    /// Windows 11 DWM native anti-aliased rounded corners (`DWMWCP_ROUND`, 8px) and border.
+    NativeDwmRound,
+    /// Windows 10 / VDI Win32 region clipping (`SetWindowRgn` + `CreateRoundRectRgn`).
+    RegionClipped,
+    /// macOS / transparent alpha-composited rounded corners.
+    TransparentSurface,
+}
+
+/// Apply native OS-level rounded window corners to a Win32 `HWND` so rectangular 90-degree
+/// window outlines never appear (works on Windows 11, Windows 10, and VDI without DirectComposition).
+pub fn apply_rounded_window(
+    hwnd_raw: isize,
+    radius_logical_px: i32,
+    scale_factor: f32,
+) -> WindowRoundStyle {
+    platform::apply_rounded_window(hwnd_raw, radius_logical_px, scale_factor)
+}

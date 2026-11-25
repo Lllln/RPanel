@@ -30,6 +30,7 @@ form_urlencoded = "1.2"
 # Clipboard & Concurrency & Logging
 arboard = "3.7"
 crossbeam-channel = "0.5"
+raw-window-handle = "0.6"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -44,6 +45,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 # Windows platform
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",

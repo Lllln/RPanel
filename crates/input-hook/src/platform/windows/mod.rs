@@ -14,9 +14,14 @@ use crossbeam_channel::{Sender, unbounded};
 use tracing::{debug, error, info, warn};
 use windows::Win32::Foundation::{
     EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ILLEGAL_INSTRUCTION, EXCEPTION_PRIV_INSTRUCTION,
-    EXCEPTION_STACK_OVERFLOW, HINSTANCE, LPARAM, LRESULT, POINT, WPARAM,
+    EXCEPTION_STACK_OVERFLOW, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
-use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
+use windows::Win32::Graphics::Dwm::{
+    DWMWCP_ROUND, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
+};
+use windows::Win32::Graphics::Gdi::{
+    CreateRoundRectRgn, DeleteObject, MONITOR_DEFAULTTONEAREST, MonitorFromPoint, SetWindowRgn,
+};
 use windows::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
 };
@@ -28,7 +33,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, GetSystemMetrics, HC_ACTION, MSG,
+    CallNextHookEx, DispatchMessageW, GetMessageW, GetSystemMetrics, GetWindowRect, HC_ACTION, MSG,
     MSLLHOOKSTRUCT, PostThreadMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_REMOTESESSION,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetWindowsHookExW, TranslateMessage,
     UnhookWindowsHookEx, WH_MOUSE_LL, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
@@ -388,6 +393,67 @@ pub fn to_logical_point(point: ScreenPoint) -> ScreenPoint {
 pub fn is_remote_desktop_session() -> bool {
     // SAFETY: GetSystemMetrics is thread-safe and side-effect free.
     unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
+}
+
+/// Apply native Windows 11 DWM rounded corners (with subtle `#D2D2D7` border), or fall back
+/// to Win32 `CreateRoundRectRgn` + `SetWindowRgn` clipping on Windows 10 / VDI so square
+/// 90-degree corners are completely removed even when DirectComposition is disabled.
+pub fn apply_rounded_window(
+    hwnd_raw: isize,
+    radius_logical_px: i32,
+    scale_factor: f32,
+) -> crate::WindowRoundStyle {
+    if hwnd_raw == 0 {
+        return crate::WindowRoundStyle::TransparentSurface;
+    }
+
+    let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
+
+    // 1. Try Windows 11 native anti-aliased DWM rounded corners + matching hairline border.
+    let corner_pref = DWMWCP_ROUND;
+    let dwm_ok = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner_pref as *const _ as *const std::ffi::c_void,
+            size_of::<windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE>() as u32,
+        )
+        .is_ok()
+    };
+
+    if dwm_ok {
+        // COLORREF is 0x00BBGGRR: matches our subtle Apple border `#D2D2D7`.
+        let border_color: u32 = 0x00D7_D2D2;
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                &border_color as *const _ as *const std::ffi::c_void,
+                size_of::<u32>() as u32,
+            );
+        }
+        return crate::WindowRoundStyle::NativeDwmRound;
+    }
+
+    // 2. Windows 10 / Windows Server / VDI fallback: physically clip the HWND to a rounded rect.
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
+        let width = (rect.right - rect.left).max(1);
+        let height = (rect.bottom - rect.top).max(1);
+        let diameter = ((radius_logical_px as f32 * scale_factor.max(1.0)).round() as i32 * 2)
+            .clamp(2, width.min(height));
+
+        // SAFETY: CreateRoundRectRgn returns an HRGN; on SetWindowRgn success the OS owns it.
+        unsafe {
+            let rgn = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
+            if !rgn.is_invalid() && SetWindowRgn(hwnd, Some(rgn), true) == 0 {
+                let _ = DeleteObject(rgn.into());
+            }
+        }
+        return crate::WindowRoundStyle::RegionClipped;
+    }
+
+    crate::WindowRoundStyle::TransparentSurface
 }
 
 static VEH_LOGGED: AtomicBool = AtomicBool::new(false);

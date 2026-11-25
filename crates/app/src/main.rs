@@ -17,9 +17,13 @@ use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{
     ActivationPolicy, AnyWindowHandle, App, AppContext, Entity, Global, QuitMode, Render, Result,
     Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind,
-    WindowOptions, transparent_black,
+    WindowOptions, rgb, transparent_black,
 };
-use input_hook::{HookConfig, HookControl, HookError, HookEvent, HookHandle, ScreenPoint};
+use input_hook::{
+    HookConfig, HookControl, HookError, HookEvent, HookHandle, ScreenPoint, WindowRoundStyle,
+};
+#[cfg(windows)]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -321,7 +325,7 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
         kind: WindowKind::PopUp,
         titlebar: None,
         window_decorations: Some(WindowDecorations::Client),
-        window_background: WindowBackgroundAppearance::Transparent,
+        window_background: default_window_background(),
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
@@ -330,9 +334,24 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
         ..Default::default()
     };
 
-    match open_transparent_window(options, cx, |window, cx| {
-        cx.new(|cx| QuickActionMenu::new(cursor, captured_text, open_editor_tx, window, cx))
-    }) {
+    match open_rounded_window(
+        options,
+        10,
+        crate::ui::panel::palette::CARD_BG,
+        cx,
+        |round_style, window, cx| {
+            cx.new(|cx| {
+                QuickActionMenu::new(
+                    cursor,
+                    captured_text,
+                    open_editor_tx,
+                    round_style,
+                    window,
+                    cx,
+                )
+            })
+        },
+    ) {
         Ok((handle, _menu)) => {
             cx.global_mut::<AppRuntime>().active_menu = Some(handle);
             cx.activate(true);
@@ -363,7 +382,7 @@ fn open_floating_panel(
         kind: WindowKind::Floating,
         titlebar: None,
         window_decorations: Some(WindowDecorations::Client),
-        window_background: WindowBackgroundAppearance::Transparent,
+        window_background: default_window_background(),
         is_movable: true,
         is_resizable: true,
         is_minimizable: false,
@@ -372,9 +391,15 @@ fn open_floating_panel(
         ..Default::default()
     };
 
-    match open_transparent_window(options, cx, |window, cx| {
-        cx.new(|cx| FloatingPanel::new(initial_raw, auto_hide_on_blur, window, cx))
-    }) {
+    match open_rounded_window(
+        options,
+        10,
+        crate::ui::panel::palette::SURFACE_BG,
+        cx,
+        |round_style, window, cx| {
+            cx.new(|cx| FloatingPanel::new(initial_raw, auto_hide_on_blur, round_style, window, cx))
+        },
+    ) {
         Ok((handle, _panel)) => {
             cx.global_mut::<AppRuntime>().active_panel = Some(handle);
             cx.activate(true);
@@ -393,21 +418,63 @@ fn dismiss_window(handle: Option<AnyWindowHandle>, cx: &mut App) {
     }
 }
 
-/// Open a GPUI window with a transparent `Root` surface so rounded corners have zero white bleed
-/// on Windows and macOS.
-fn open_transparent_window<V: Render>(
+fn default_window_background() -> WindowBackgroundAppearance {
+    if cfg!(windows) {
+        // On Windows, native DWM rounding (Win11) or SetWindowRgn clipping (Win10/VDI) shapes
+        // the HWND directly so opaque swapchains render crisply without corner artifacts.
+        WindowBackgroundAppearance::Opaque
+    } else {
+        WindowBackgroundAppearance::Transparent
+    }
+}
+
+/// Apply native OS-level rounded corners to the given GPUI window handle.
+pub fn apply_os_window_rounding(window: &Window, radius_logical_px: i32) -> WindowRoundStyle {
+    #[cfg(windows)]
+    {
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            return input_hook::apply_rounded_window(
+                win32.hwnd.get(),
+                radius_logical_px,
+                window.scale_factor(),
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, radius_logical_px);
+    }
+    WindowRoundStyle::TransparentSurface
+}
+
+/// Open a GPUI window with OS-matched rounded corners and matching `Root` surface background
+/// so rectangular 90-degree outlines never appear on Windows 10/11, VDI, or macOS.
+fn open_rounded_window<V: Render>(
     options: WindowOptions,
+    radius_logical_px: i32,
+    opaque_root_bg: u32,
     cx: &mut App,
-    build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
+    build: impl FnOnce(WindowRoundStyle, &mut Window, &mut App) -> Entity<V>,
 ) -> Result<(AnyWindowHandle, Entity<V>)> {
     let mut built = None;
     let window = cx.open_window(options, |window, cx| {
-        let view = build(window, cx);
+        let round_style = apply_os_window_rounding(window, radius_logical_px);
+        let view = build(round_style, window, cx);
         built = Some(view.clone());
-        cx.new(|cx| gpui_kit::base::Root::new(view, window, cx).bg(transparent_black()))
+        cx.new(|cx| {
+            let root = gpui_kit::base::Root::new(view, window, cx);
+            match round_style {
+                WindowRoundStyle::TransparentSurface => root.bg(transparent_black()),
+                WindowRoundStyle::NativeDwmRound | WindowRoundStyle::RegionClipped => {
+                    root.bg(rgb(opaque_root_bg))
+                }
+            }
+        })
     })?;
     Ok((
         window.into(),
-        built.expect("open_transparent_window ran its build closure"),
+        built.expect("open_rounded_window ran its build closure"),
     ))
 }

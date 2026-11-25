@@ -71,3 +71,20 @@ pub fn install_native_crash_handler() {
         windows::install_native_crash_handler();
     }
 }
+
+pub fn apply_rounded_window(
+    hwnd_raw: isize,
+    radius_logical_px: i32,
+    scale_factor: f32,
+) -> crate::WindowRoundStyle {
+    #[cfg(windows)]
+    {
+        windows::apply_rounded_window(hwnd_raw, radius_logical_px, scale_factor)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd_raw, radius_logical_px, scale_factor);
+        crate::WindowRoundStyle::TransparentSurface
+    }
+}
