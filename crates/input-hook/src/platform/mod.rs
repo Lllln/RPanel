@@ -64,3 +64,10 @@ pub fn is_remote_desktop_session() -> bool {
         false
     }
 }
+
+pub fn install_native_crash_handler() {
+    #[cfg(windows)]
+    {
+        windows::install_native_crash_handler();
+    }
+}

@@ -1,16 +1,25 @@
 pub mod keyboard;
 
+use std::backtrace::Backtrace;
 use std::cell::RefCell;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Sender, unbounded};
 use tracing::{debug, error, info, warn};
-use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{
+    EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ILLEGAL_INSTRUCTION, EXCEPTION_PRIV_INSTRUCTION,
+    EXCEPTION_STACK_OVERFLOW, HINSTANCE, LPARAM, LRESULT, POINT, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
+use windows::Win32::System::Diagnostics::Debug::{
+    AddVectoredExceptionHandler, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -379,4 +388,74 @@ pub fn to_logical_point(point: ScreenPoint) -> ScreenPoint {
 pub fn is_remote_desktop_session() -> bool {
     // SAFETY: GetSystemMetrics is thread-safe and side-effect free.
     unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
+}
+
+static VEH_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Install a Win32 Vectored Exception Handler that captures fatal native SEH exceptions
+/// (e.g. `0xC0000005`, `0xC00000FD`, `0xC000001D`, `0xC000041D`) into `%TEMP%\rpanel-crash.log`.
+pub fn install_native_crash_handler() {
+    // SAFETY: Registers a process-wide vectored exception handler with a valid callback signature.
+    unsafe {
+        let _ = AddVectoredExceptionHandler(1, Some(vectored_exception_handler));
+    }
+}
+
+unsafe extern "system" fn vectored_exception_handler(info: *mut EXCEPTION_POINTERS) -> i32 {
+    if info.is_null() {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // SAFETY: Windows passes a valid EXCEPTION_POINTERS pointer to the VEH callback.
+    let record_ptr = unsafe { (*info).ExceptionRecord };
+    if record_ptr.is_null() {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    let record = unsafe { &*record_ptr };
+    let code = record.ExceptionCode;
+
+    // Only log genuinely fatal native CPU/SEH exceptions; ignore benign WinRT/C++/RPC exceptions.
+    let is_fatal = code == EXCEPTION_ACCESS_VIOLATION
+        || code == EXCEPTION_STACK_OVERFLOW
+        || code == EXCEPTION_ILLEGAL_INSTRUCTION
+        || code == EXCEPTION_PRIV_INSTRUCTION
+        || code.0 as u32 == 0xC000_0409
+        || code.0 as u32 == 0xC000_041D;
+
+    if is_fatal && !VEH_LOGGED.swap(true, Ordering::AcqRel) {
+        let addr = record.ExceptionAddress as usize;
+        let base = unsafe { GetModuleHandleW(None) }
+            .map(|h| h.0 as usize)
+            .unwrap_or(0);
+        let offset = addr.saturating_sub(base);
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut report = format!(
+            "=== RPanel Native SEH Exception (unix={ts}) ===\n\
+             ExceptionCode: 0x{:08X}\n\
+             ExceptionAddress: 0x{:016X}\n\
+             ExeBase: 0x{:016X}\n\
+             OffsetFromExeBase: 0x{:016X}\n",
+            code.0 as u32, addr, base, offset
+        );
+
+        if code != EXCEPTION_STACK_OVERFLOW {
+            let bt = Backtrace::force_capture();
+            report.push_str(&format!("\nBacktrace:\n{bt}\n"));
+        } else {
+            report.push_str("\n(Stack overflow detected; skipped deep backtrace capture)\n");
+        }
+        report.push('\n');
+
+        let log_path = std::env::temp_dir().join("rpanel-crash.log");
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = file.write_all(report.as_bytes());
+        }
+        eprintln!("{report}");
+    }
+
+    EXCEPTION_CONTINUE_SEARCH
 }

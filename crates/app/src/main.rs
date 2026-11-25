@@ -96,6 +96,7 @@ fn install_panic_logger() {
 
 fn main() {
     install_panic_logger();
+    input_hook::install_native_crash_handler();
 
     // Disable DirectComposition automatically inside Windows RDP/VDI sessions unless overridden.
     if input_hook::is_remote_desktop_session()

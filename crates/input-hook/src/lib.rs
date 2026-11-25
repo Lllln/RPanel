@@ -180,3 +180,9 @@ pub fn to_logical_point(point: ScreenPoint) -> ScreenPoint {
 pub fn is_remote_desktop_session() -> bool {
     platform::is_remote_desktop_session()
 }
+
+/// Install a platform native exception logger (Windows Vectored Exception Handler) that records
+/// fatal SEH exceptions before Windows converts them to `0xC000041D` inside `WndProc`.
+pub fn install_native_crash_handler() {
+    platform::install_native_crash_handler();
+}
