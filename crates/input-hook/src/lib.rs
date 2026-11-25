@@ -175,3 +175,8 @@ pub fn capture_selection() -> Result<CaptureResult, HookError> {
 pub fn to_logical_point(point: ScreenPoint) -> ScreenPoint {
     platform::to_logical_point(point)
 }
+
+/// Returns `true` when running inside a Windows Remote Desktop / VDI session (`SM_REMOTESESSION`).
+pub fn is_remote_desktop_session() -> bool {
+    platform::is_remote_desktop_session()
+}

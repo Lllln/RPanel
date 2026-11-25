@@ -1,5 +1,5 @@
 use gpui_kit::base::input::{Diagnostic, DiagnosticSeverity};
-use gpui_kit::component::input::{Editor, EditorState, GutterStyle, Position, TabSize};
+use gpui_kit::component::input::{Editor, EditorState, GutterStyle, Position, RopeExt, TabSize};
 use gpui_kit::{App, AppContext, Context, Entity, IntoElement, Styled, Window, px, rgb};
 use json_engine::ValidationStatus;
 
@@ -38,15 +38,24 @@ pub fn sync_validation_diagnostics(
     if let Some(diagnostics) = state.diagnostics_mut() {
         diagnostics.reset(&text);
         if let ValidationStatus::Invalid(err) = status {
-            let line = err.line.saturating_sub(1) as u32;
-            let col = err.column.saturating_sub(1) as u32;
-            let start = Position::new(line, col);
-            let end = Position::new(line, col.saturating_add(1));
-            diagnostics.push(
-                Diagnostic::new(start..end, err.message.clone())
-                    .with_severity(DiagnosticSeverity::Error)
-                    .with_source("json"),
-            );
+            let total_lines = text.lines_len();
+            if total_lines > 0 {
+                let line_idx = err.line.saturating_sub(1).min(total_lines - 1);
+                let line_len = text.slice_line(line_idx).len_chars();
+                if line_len > 0 {
+                    let start_col = err.column.saturating_sub(1).min(line_len - 1);
+                    let end_col = (start_col + 1).min(line_len);
+                    let start = Position::new(line_idx as u32, start_col as u32);
+                    let end = Position::new(line_idx as u32, end_col as u32);
+                    if start < end {
+                        diagnostics.push(
+                            Diagnostic::new(start..end, err.message.clone())
+                                .with_severity(DiagnosticSeverity::Error)
+                                .with_source("json"),
+                        );
+                    }
+                }
+            }
         }
     }
     cx.notify();

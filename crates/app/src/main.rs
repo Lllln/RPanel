@@ -5,9 +5,12 @@ mod state;
 mod tray;
 mod ui;
 
+use std::backtrace::Backtrace;
 use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Sender, unbounded};
 use gpui_kit::component::{Theme, ThemeMode};
@@ -70,7 +73,40 @@ fn parse_args() -> LaunchArgs {
     }
 }
 
+fn install_panic_logger() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backtrace = Backtrace::force_capture();
+        let report = format!(
+            "=== RPanel Panic (unix={ts}) ===\n{info}\n\nBacktrace:\n{backtrace}\n\n"
+        );
+        let log_path = env::temp_dir().join("rpanel-crash.log");
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = file.write_all(report.as_bytes());
+        }
+        eprintln!("{report}");
+        eprintln!("Crash log saved to: {}", log_path.display());
+        default_hook(info);
+    }));
+}
+
 fn main() {
+    install_panic_logger();
+
+    // Disable DirectComposition automatically inside Windows RDP/VDI sessions unless overridden.
+    if input_hook::is_remote_desktop_session()
+        && env::var_os("GPUI_DISABLE_DIRECT_COMPOSITION").is_none()
+    {
+        // SAFETY: Called on the main thread before spawning any background threads or GPUI runtime.
+        unsafe {
+            env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1");
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

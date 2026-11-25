@@ -20,7 +20,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, GetSystemMetrics, HC_ACTION, MSG,
-    MSLLHOOKSTRUCT, PostThreadMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    MSLLHOOKSTRUCT, PostThreadMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_REMOTESESSION,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetWindowsHookExW, TranslateMessage,
     UnhookWindowsHookEx, WH_MOUSE_LL, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
@@ -373,4 +373,10 @@ pub fn to_logical_point(point: ScreenPoint) -> ScreenPoint {
         }
     }
     point
+}
+
+/// Detect whether the process is running inside a Windows Remote Desktop / VDI session.
+pub fn is_remote_desktop_session() -> bool {
+    // SAFETY: GetSystemMetrics is thread-safe and side-effect free.
+    unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
 }

@@ -106,8 +106,11 @@ impl FloatingPanel {
                 let text = editor.read(cx).value().to_string();
                 this.doc.refresh_metrics(&text);
                 let validation = this.doc.validation.clone();
-                editor.update(cx, |state, cx| {
-                    sync_validation_diagnostics(state, &validation, cx);
+                let editor_weak = editor.downgrade();
+                cx.defer(move |cx| {
+                    let _ = editor_weak.update(cx, |state, cx| {
+                        sync_validation_diagnostics(state, &validation, cx);
+                    });
                 });
                 cx.notify();
             }

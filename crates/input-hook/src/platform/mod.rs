@@ -52,3 +52,15 @@ pub fn to_logical_point(point: crate::ScreenPoint) -> crate::ScreenPoint {
         point
     }
 }
+
+pub fn is_remote_desktop_session() -> bool {
+    #[cfg(windows)]
+    {
+        windows::is_remote_desktop_session()
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
