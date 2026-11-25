@@ -3,6 +3,7 @@ use gpui_kit::component::input::{Editor, EditorState, GutterStyle, Position, Rop
 use gpui_kit::{App, AppContext, Context, Entity, IntoElement, Styled, Window, px, rgb};
 use json_engine::ValidationStatus;
 
+use crate::ui::json_highlight::json_highlighter_factory;
 use crate::ui::panel::palette;
 
 /// Create a JSON-highlighted code editor state with line numbers, folding, and 2-space indent.
@@ -23,6 +24,7 @@ pub fn create_json_editor_state(
                 hard_tabs: false,
             })
             .placeholder("Paste or type JSON, JSON5, CSV/TSV, HTTP headers, or URL query...");
+        state.set_highlighter_factory(json_highlighter_factory(), cx);
         state.set_value(initial, window, cx);
         state
     })

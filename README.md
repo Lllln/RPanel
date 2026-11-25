@@ -20,7 +20,7 @@ RPanel 是一款纯 Rust 编写、支持 **Windows 与 macOS 双端** 的轻量�
   5. 纯文本兜底（包装为可编辑的 `{"text": "..."}`）
 - **纯 Rust GPUI 悬浮面板与系统托盘**
   - 基于 `gpui-kit`（`gpui` + `gpui-component`）构建无 WebView 的轻量原生界面，克制浅色 Apple 风格。
-  - 内置 `tree-sitter-json` 语法高亮、行号、代码折叠、撤销栈保留的格式化/压缩/转义/去转义、内联错误下划线与点击状态栏跳转错误行列。
+  - 内置纯 Rust JSON 语法高亮器（无 `tree-sitter` C 库依赖，避免 Windows `ts_query_cursor_next_match` 崩溃）、行号、代码折叠、撤销栈保留的格式化/压缩/转义/去转义、内联错误下划线与点击状态栏跳转错误行列。
   - 集成 `tray-icon` 系统托盘：从剪贴板打开、启用/暂停拦截、切换长按时长阈值、退出程序。
 
 ## Workspace 架构

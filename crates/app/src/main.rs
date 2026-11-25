@@ -188,7 +188,7 @@ fn main() {
                 let sample = r#"{
   "app": "RPanel",
   "engine": "GPUI + gpui-component",
-  "features": ["Right-Click Hold", "Smart JSONify", "Tree-sitter Highlight"],
+  "features": ["Right-Click Hold", "Smart JSONify", "Pure-Rust JSON Highlight"],
   "ready": true
 }"#;
                 open_floating_panel(Some(sample.to_string()), None, false, cx);
