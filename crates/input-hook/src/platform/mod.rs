@@ -88,3 +88,52 @@ pub fn configure_window_rounding(
         crate::WindowRoundStyle::TransparentSurface
     }
 }
+
+#[cfg(windows)]
+pub struct SingleInstanceGuardInner {
+    _guard: windows::WinSingleInstanceGuard,
+}
+
+#[cfg(not(windows))]
+pub struct SingleInstanceGuardInner {
+    _file: std::fs::File,
+}
+
+pub fn acquire_single_instance(app_id: &str) -> Option<SingleInstanceGuardInner> {
+    #[cfg(windows)]
+    {
+        windows::acquire_single_instance(app_id).map(|guard| SingleInstanceGuardInner {
+            _guard: guard,
+        })
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::fs::{OpenOptions, TryLockError};
+
+        let sanitized: String = app_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let lock_path = std::env::temp_dir().join(format!("{sanitized}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .ok()?;
+
+        match file.try_lock() {
+            Ok(()) => Some(SingleInstanceGuardInner { _file: file }),
+            Err(TryLockError::WouldBlock) => None,
+            Err(_) => None,
+        }
+    }
+}

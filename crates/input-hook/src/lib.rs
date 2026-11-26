@@ -209,3 +209,39 @@ pub fn configure_window_rounding(
 ) -> WindowRoundStyle {
     platform::configure_window_rounding(hwnd_raw, is_popup, direct_composition_enabled)
 }
+
+/// Process-lifetime guard ensuring only a single instance of RPanel runs per user session.
+/// Dropping this guard releases the OS kernel lock (and the OS also releases it automatically on crash).
+pub struct SingleInstanceGuard {
+    _inner: platform::SingleInstanceGuardInner,
+}
+
+/// Attempt to acquire a per-session single-instance lock for `app_id`.
+/// Returns `Some(guard)` if this process is the primary instance, or `None` if another instance
+/// is already running.
+pub fn acquire_single_instance(app_id: &str) -> Option<SingleInstanceGuard> {
+    platform::acquire_single_instance(app_id).map(|inner| SingleInstanceGuard { _inner: inner })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_instance_guard_blocks_duplicate_until_dropped() {
+        let id = format!(
+            "com.rpanel.test.single-instance.{}",
+            std::process::id()
+        );
+        let first = acquire_single_instance(&id);
+        assert!(first.is_some(), "first acquisition should succeed");
+
+        let second = acquire_single_instance(&id);
+        assert!(second.is_none(), "second acquisition should be blocked while first is held");
+
+        drop(first);
+
+        let third = acquire_single_instance(&id);
+        assert!(third.is_some(), "acquisition should succeed again after guard is dropped");
+    }
+}

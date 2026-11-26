@@ -13,8 +13,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crossbeam_channel::{Sender, unbounded};
 use tracing::{debug, error, info, warn};
 use windows::Win32::Foundation::{
-    EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ILLEGAL_INSTRUCTION, EXCEPTION_PRIV_INSTRUCTION,
-    EXCEPTION_STACK_OVERFLOW, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
+    CloseHandle, ERROR_ALREADY_EXISTS, EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ILLEGAL_INSTRUCTION,
+    EXCEPTION_PRIV_INSTRUCTION, EXCEPTION_STACK_OVERFLOW, GetLastError, HANDLE, HINSTANCE, HWND,
+    LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
     DWM_WINDOW_CORNER_PREFERENCE, DWMNCRENDERINGPOLICY, DWMNCRP_DISABLED, DWMWCP_DONOTROUND,
@@ -26,7 +27,8 @@ use windows::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
+use windows::core::HSTRING;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE,
@@ -387,6 +389,42 @@ pub fn to_logical_point(point: ScreenPoint) -> ScreenPoint {
         }
     }
     point
+}
+
+/// RAII owner of the Win32 session-scoped named mutex used for single-instance enforcement.
+pub struct WinSingleInstanceGuard {
+    handle: HANDLE,
+}
+
+// SAFETY: A Win32 mutex HANDLE is an opaque kernel handle safe to transfer across threads
+// and close on process exit; ownership is never shared concurrently.
+unsafe impl Send for WinSingleInstanceGuard {}
+
+impl Drop for WinSingleInstanceGuard {
+    fn drop(&mut self) {
+        if !self.handle.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+/// Acquire a per-session Win32 named mutex (`Local\<app_id>`). Returns `None` if another
+/// instance in the current Windows session already owns the mutex.
+pub fn acquire_single_instance(app_id: &str) -> Option<WinSingleInstanceGuard> {
+    let mutex_name = HSTRING::from(format!("Local\\{app_id}"));
+    // SAFETY: `CreateMutexW` returns a valid kernel HANDLE or Err; `GetLastError` immediately
+    // reports `ERROR_ALREADY_EXISTS` when opening an existing mutex owned by another instance.
+    let handle = unsafe { CreateMutexW(None, false, &mutex_name) }.ok()?;
+    let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    if already_exists {
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        return None;
+    }
+    Some(WinSingleInstanceGuard { handle })
 }
 
 /// Detect whether the process is running inside a Windows Remote Desktop / VDI session.

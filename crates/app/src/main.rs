@@ -20,7 +20,8 @@ use gpui_kit::{
     WindowOptions, rgb, transparent_black,
 };
 use input_hook::{
-    HookConfig, HookControl, HookError, HookEvent, HookHandle, ScreenPoint, WindowRoundStyle,
+    HookConfig, HookControl, HookError, HookEvent, HookHandle, ScreenPoint, SingleInstanceGuard,
+    WindowRoundStyle,
 };
 #[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -43,6 +44,7 @@ struct AppRuntime {
     tray: Option<TrayController>,
     hook_control: Option<Arc<HookControl>>,
     _hook_handle: Option<HookHandle>,
+    _single_instance: SingleInstanceGuard,
 }
 
 impl Global for AppRuntime {}
@@ -118,6 +120,14 @@ fn main() {
         )
         .init();
 
+    // Enforce single instance per user session so duplicate global right-click hooks
+    // can never race with each other and break right-click across the OS.
+    let Some(single_instance) = input_hook::acquire_single_instance("com.rpanel.app.single-instance")
+    else {
+        warn!("Another RPanel instance is already running; exiting duplicate launch");
+        return;
+    };
+
     let args = parse_args();
     let initial_config = HookConfig {
         hold_duration: Duration::from_millis(args.hold_ms),
@@ -180,6 +190,7 @@ fn main() {
                 tray,
                 hook_control,
                 _hook_handle: hook_handle,
+                _single_instance: single_instance,
             });
 
             if args.preview_menu {
@@ -292,6 +303,10 @@ fn handle_tray_command(cmd: TrayCommand, cx: &mut App) -> bool {
         }
         TrayCommand::Quit => {
             info!("quitting RPanel from tray menu");
+            // Explicitly unhook the global mouse hook before terminating the UI event loop.
+            let runtime = cx.global_mut::<AppRuntime>();
+            runtime._hook_handle.take();
+            runtime.tray.take();
             cx.quit();
             true
         }
