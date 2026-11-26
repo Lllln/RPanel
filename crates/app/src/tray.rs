@@ -67,7 +67,7 @@ impl TrayController {
 
         let icon = build_tray_icon()?;
         let builder = TrayIconBuilder::new()
-            .with_tooltip("RPanel — Right-Click Floating Utility Panel")
+            .with_tooltip("RPanel — 右键悬浮工具面板")
             .with_menu(Box::new(menu));
         #[cfg(target_os = "macos")]
         let builder = builder.with_icon_templated(icon);

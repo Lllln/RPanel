@@ -4,6 +4,7 @@ use gpui_kit::{App, AppContext, Context, Entity, IntoElement, Styled, Window, px
 use json_engine::ValidationStatus;
 
 use crate::ui::json_highlight::json_highlighter_factory;
+use crate::ui::localize_json_error_message;
 use crate::ui::panel::palette;
 
 /// Create a JSON-highlighted code editor state with line numbers, folding, and 2-space indent.
@@ -23,7 +24,7 @@ pub fn create_json_editor_state(
                 tab_size: 2,
                 hard_tabs: false,
             })
-            .placeholder("Paste or type JSON, JSON5, CSV/TSV, HTTP headers, or URL query...");
+            .placeholder("粘贴或输入 JSON、JSON5、CSV/TSV、HTTP 请求头或 URL 查询参数...");
         state.set_highlighter_factory(json_highlighter_factory(), cx);
         state.set_value(initial, window, cx);
         state
@@ -51,7 +52,7 @@ pub fn sync_validation_diagnostics(
                     let end = Position::new(line_idx as u32, end_col as u32);
                     if start < end {
                         diagnostics.push(
-                            Diagnostic::new(start..end, err.message.clone())
+                            Diagnostic::new(start..end, localize_json_error_message(&err.message))
                                 .with_severity(DiagnosticSeverity::Error)
                                 .with_source("json"),
                         );

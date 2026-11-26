@@ -3,15 +3,17 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::{EditorState, InputEvent, Position};
 use gpui_kit::{
     App, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
-    ParentElement, Render, Styled, Subscription, Window, actions, div, px, rgb,
+    ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Window, actions, div,
+    px, rgb,
 };
 use input_hook::WindowRoundStyle;
 use json_engine::{SourceFormat, ValidationStatus};
 
-use crate::state::PanelDocumentState;
+use crate::state::{FeedbackKind, PanelDocumentState, PanelFeedback};
 use crate::ui::editor::{
     create_json_editor_state, render_json_editor, sync_validation_diagnostics,
 };
+use crate::ui::format_engine_error;
 use crate::ui::status_bar::render_status_bar;
 use crate::ui::toolbar::{ToolbarCallbacks, render_toolbar};
 
@@ -34,13 +36,13 @@ pub fn register_keybindings(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-enter", CopyAndHide, Some("RPanel")),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift-f", FormatPrettyAction, Some("RPanel")),
+        KeyBinding::new("cmd-e", FormatPrettyAction, Some("RPanel")),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-f", FormatPrettyAction, Some("RPanel")),
+        KeyBinding::new("ctrl-e", FormatPrettyAction, Some("RPanel")),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-shift-m", FormatMinifyAction, Some("RPanel")),
+        KeyBinding::new("cmd-m", FormatMinifyAction, Some("RPanel")),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-m", FormatMinifyAction, Some("RPanel")),
+        KeyBinding::new("ctrl-m", FormatMinifyAction, Some("RPanel")),
     ]);
 }
 
@@ -65,6 +67,9 @@ pub mod palette {
     pub const STATUS_OK: u32 = 0x34C759;
     pub const STATUS_ERR: u32 = 0xFF3B30;
     pub const STATUS_MUTED: u32 = 0xAEAEB2;
+    pub const ERR_TINT: u32 = 0xFFF2F1;
+    pub const ERR_BORDER: u32 = 0xFFD6D3;
+    pub const ERR_TEXT: u32 = 0xD70015;
 }
 
 /// Grace period after opening before window deactivation triggers auto-hide.
@@ -74,6 +79,7 @@ pub struct FloatingPanel {
     focus_handle: FocusHandle,
     editor: Entity<EditorState>,
     doc: PanelDocumentState,
+    last_applied_text: Option<String>,
     round_style: WindowRoundStyle,
     opened_at: Instant,
     auto_hide_on_blur: bool,
@@ -107,6 +113,11 @@ impl FloatingPanel {
         let editor_sub = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 let text = editor.read(cx).value().to_string();
+                if this.last_applied_text.as_deref() == Some(text.as_str()) {
+                    this.last_applied_text = None;
+                } else {
+                    this.doc.feedback = None;
+                }
                 this.doc.refresh_metrics(&text);
                 let validation = this.doc.validation.clone();
                 let editor_weak = editor.downgrade();
@@ -132,6 +143,7 @@ impl FloatingPanel {
             focus_handle: cx.focus_handle(),
             editor,
             doc,
+            last_applied_text: None,
             round_style,
             opened_at: Instant::now(),
             auto_hide_on_blur,
@@ -151,7 +163,8 @@ impl FloatingPanel {
         cx: &mut Context<Self>,
     ) {
         self.doc.refresh_metrics(&new_text);
-        self.doc.feedback = Some(feedback.into());
+        self.doc.feedback = Some(PanelFeedback::info(feedback));
+        self.last_applied_text = Some(new_text.clone());
         let validation = self.doc.validation.clone();
         self.editor.update(cx, |state, cx| {
             state.replace_all(new_text, window, cx);
@@ -160,13 +173,22 @@ impl FloatingPanel {
         cx.notify();
     }
 
+    fn set_error_feedback(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        self.doc.feedback = Some(PanelFeedback::error(message));
+        cx.notify();
+    }
+
+    fn dismiss_feedback(&mut self, cx: &mut Context<Self>) {
+        self.doc.feedback = None;
+        cx.notify();
+    }
+
     fn apply_pretty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.current_text(cx);
         match json_engine::format_pretty(&text) {
-            Ok(pretty) => self.replace_editor_text(pretty, "Formatted", window, cx),
+            Ok(pretty) => self.replace_editor_text(pretty, "已格式化", window, cx),
             Err(err) => {
-                self.doc.feedback = Some(format!("Format failed: {err}"));
-                cx.notify();
+                self.set_error_feedback(format!("格式化失败：{}", format_engine_error(&err)), cx);
             }
         }
     }
@@ -174,10 +196,9 @@ impl FloatingPanel {
     fn apply_minify(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.current_text(cx);
         match json_engine::minify(&text) {
-            Ok(compact) => self.replace_editor_text(compact, "Minified", window, cx),
+            Ok(compact) => self.replace_editor_text(compact, "已压缩", window, cx),
             Err(err) => {
-                self.doc.feedback = Some(format!("Minify failed: {err}"));
-                cx.notify();
+                self.set_error_feedback(format!("压缩失败：{}", format_engine_error(&err)), cx);
             }
         }
     }
@@ -185,10 +206,9 @@ impl FloatingPanel {
     fn apply_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.current_text(cx);
         match json_engine::escape_json_string(&text) {
-            Ok(escaped) => self.replace_editor_text(escaped, "Escaped", window, cx),
+            Ok(escaped) => self.replace_editor_text(escaped, "已转义", window, cx),
             Err(err) => {
-                self.doc.feedback = Some(format!("Escape failed: {err}"));
-                cx.notify();
+                self.set_error_feedback(format!("转义失败：{}", format_engine_error(&err)), cx);
             }
         }
     }
@@ -198,11 +218,10 @@ impl FloatingPanel {
         match json_engine::unescape_json_string(&text) {
             Ok(unescaped) => {
                 let output = json_engine::format_pretty(&unescaped).unwrap_or(unescaped);
-                self.replace_editor_text(output, "Unescaped", window, cx);
+                self.replace_editor_text(output, "已去转义", window, cx);
             }
             Err(err) => {
-                self.doc.feedback = Some(format!("Unescape failed: {err}"));
-                cx.notify();
+                self.set_error_feedback(format!("去转义失败：{}", format_engine_error(&err)), cx);
             }
         }
     }
@@ -212,11 +231,10 @@ impl FloatingPanel {
             Ok(raw) => {
                 let converted = json_engine::convert_to_json(&raw);
                 self.doc.source_format = converted.source_format;
-                self.replace_editor_text(converted.formatted, "Reloaded", window, cx);
+                self.replace_editor_text(converted.formatted, "已载入", window, cx);
             }
             Err(_) => {
-                self.doc.feedback = Some("Clipboard is empty".into());
-                cx.notify();
+                self.set_error_feedback("剪贴板为空，无法载入内容", cx);
             }
         }
     }
@@ -224,8 +242,7 @@ impl FloatingPanel {
     fn copy_and_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.current_text(cx);
         if let Err(err) = input_hook::clipboard::write_clipboard_text(&text) {
-            self.doc.feedback = Some(format!("Copy failed: {err}"));
-            cx.notify();
+            self.set_error_feedback(format!("复制失败：{err}"), cx);
             return;
         }
         window.remove_window();
@@ -311,14 +328,90 @@ impl Render for FloatingPanel {
             ),
         };
 
+        let info_feedback = self
+            .doc
+            .feedback
+            .as_ref()
+            .filter(|fb| fb.kind == FeedbackKind::Info)
+            .map(|fb| fb.message.as_str());
+
+        let error_feedback = self
+            .doc
+            .feedback
+            .as_ref()
+            .filter(|fb| fb.kind == FeedbackKind::Error)
+            .map(|fb| fb.message.clone());
+
+        let has_validation_error = matches!(self.doc.validation, ValidationStatus::Invalid(_));
+        let on_banner_jump = cx.listener(|this, _, window, cx| this.jump_to_error(window, cx));
+        let on_dismiss_error = cx.listener(|this, _, _, cx| this.dismiss_feedback(cx));
+
+        let error_banner = error_feedback.map(|msg| {
+            let msg_area = div()
+                .id("error-banner-message")
+                .flex()
+                .items_center()
+                .flex_1()
+                .min_w_0()
+                .gap(px(7.0))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .size(px(6.0))
+                        .rounded_full()
+                        .bg(rgb(palette::STATUS_ERR)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_xs()
+                        .text_color(rgb(palette::ERR_TEXT))
+                        .child(msg),
+                );
+
+            let msg_area = if has_validation_error {
+                msg_area.cursor_pointer().on_click(on_banner_jump)
+            } else {
+                msg_area
+            };
+
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .px(px(14.0))
+                .py(px(6.0))
+                .bg(rgb(palette::ERR_TINT))
+                .border_b_1()
+                .border_color(rgb(palette::ERR_BORDER))
+                .child(msg_area)
+                .child(
+                    div()
+                        .id("error-banner-dismiss")
+                        .flex_shrink_0()
+                        .px(px(5.0))
+                        .py(px(1.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(palette::ERR_TEXT))
+                        .hover(|s| s.bg(rgb(palette::ERR_BORDER)))
+                        .on_click(on_dismiss_error)
+                        .child("×"),
+                )
+        });
+
         shell
             .child(render_toolbar(
                 self.doc.source_format,
-                self.doc.feedback.as_deref(),
+                info_feedback,
                 inner_radius,
                 callbacks,
                 cx,
             ))
+            .children(error_banner)
             .child(
                 div()
                     .flex_1()

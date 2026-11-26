@@ -4,6 +4,7 @@ use gpui_kit::{
 };
 use json_engine::ValidationStatus;
 
+use crate::ui::localize_json_error_message;
 use crate::ui::panel::palette;
 
 /// Bottom real-time JSON validation status bar with clickable error location jump.
@@ -18,33 +19,51 @@ pub fn render_status_bar(
         ValidationStatus::Empty => (
             palette::STATUS_MUTED,
             palette::INK_SECONDARY,
-            "Empty · Paste or type content".to_string(),
+            "空白 · 粘贴或输入内容".to_string(),
             false,
         ),
         ValidationStatus::Valid => (
             palette::STATUS_OK,
             palette::INK_SECONDARY,
-            format!("Valid JSON · {line_count} lines · {char_count} chars"),
+            format!("JSON 有效 · {line_count} 行 · {char_count} 字符"),
             false,
         ),
         ValidationStatus::Invalid(err) => (
             palette::STATUS_ERR,
             palette::STATUS_ERR,
-            format!("Line {}, Col {} · {}", err.line, err.column, err.message),
+            format!(
+                "第 {} 行，第 {} 列 · {}",
+                err.line,
+                err.column,
+                localize_json_error_message(&err.message)
+            ),
             true,
         ),
     };
+
+    #[cfg(target_os = "macos")]
+    let shortcut_hint = "⌘+Enter 复制 · Esc 关闭";
+    #[cfg(not(target_os = "macos"))]
+    let shortcut_hint = "Ctrl+Enter 复制 · Esc 关闭";
 
     let status_pill = div()
         .id("status-validation-pill")
         .flex()
         .items_center()
+        .flex_1()
+        .min_w_0()
         .gap(px(7.0))
-        .max_w(px(440.0))
         .overflow_hidden()
-        .child(div().size(px(7.0)).rounded_full().bg(rgb(dot_color)))
         .child(
             div()
+                .flex_shrink_0()
+                .size(px(7.0))
+                .rounded_full()
+                .bg(rgb(dot_color)),
+        )
+        .child(
+            div()
+                .min_w_0()
                 .text_xs()
                 .text_color(rgb(text_color))
                 .truncate()
@@ -52,9 +71,7 @@ pub fn render_status_bar(
         );
 
     let status_pill = if is_error {
-        status_pill
-            .cursor_pointer()
-            .on_click(on_jump_error)
+        status_pill.cursor_pointer().on_click(on_jump_error)
     } else {
         status_pill
     };
@@ -63,6 +80,7 @@ pub fn render_status_bar(
         .flex()
         .items_center()
         .justify_between()
+        .gap(px(12.0))
         .h(px(32.0))
         .px(px(14.0))
         .bg(rgb(palette::HEADER_BG))
@@ -73,8 +91,10 @@ pub fn render_status_bar(
         .child(status_pill)
         .child(
             div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
                 .text_xs()
                 .text_color(rgb(palette::INK_TERTIARY))
-                .child("⌘/Ctrl+Enter Copy · Esc Hide"),
+                .child(shortcut_hint),
         )
 }

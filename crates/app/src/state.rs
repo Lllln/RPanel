@@ -2,6 +2,36 @@ use std::time::Duration;
 
 use json_engine::{SourceFormat, ValidationStatus};
 
+/// Severity of transient user feedback shown in the floating JSON panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackKind {
+    Info,
+    Error,
+}
+
+/// Transient feedback produced by toolbar actions (format, minify, escape, copy, etc.).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelFeedback {
+    pub kind: FeedbackKind,
+    pub message: String,
+}
+
+impl PanelFeedback {
+    pub fn info(message: impl Into<String>) -> Self {
+        Self {
+            kind: FeedbackKind::Info,
+            message: message.into(),
+        }
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            kind: FeedbackKind::Error,
+            message: message.into(),
+        }
+    }
+}
+
 /// Shared document & runtime state for the floating JSON panel.
 #[derive(Debug, Clone)]
 pub struct PanelDocumentState {
@@ -9,7 +39,7 @@ pub struct PanelDocumentState {
     pub validation: ValidationStatus,
     pub line_count: usize,
     pub char_count: usize,
-    pub feedback: Option<String>,
+    pub feedback: Option<PanelFeedback>,
 }
 
 impl PanelDocumentState {

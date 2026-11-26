@@ -56,8 +56,8 @@ cargo run --locked -p input-hook --bin hook-cli -- --hold-ms 300 --move-px 8
 ### 3. 面板快捷键
 - `Esc`：隐藏浮窗（点击浮窗外部失焦也会自动隐藏）
 - `Ctrl+Enter`（Windows） / `Cmd+Enter`（macOS）：一键复制并隐藏
-- `Ctrl+Shift+F` / `Cmd+Shift+F`：美化格式化（Pretty）
-- `Ctrl+Shift+M` / `Cmd+Shift+M`：压缩为单行（Minify）
+- `Ctrl+E` / `Cmd+E`：美化格式化（Pretty）
+- `Ctrl+M` / `Cmd+M`：压缩为单行（Minify）
 
 ## 测试与打包
 
