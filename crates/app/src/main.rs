@@ -21,7 +21,6 @@ use gpui_kit::{
 };
 use input_hook::{
     HookConfig, HookControl, HookError, HookEvent, HookHandle, ScreenPoint, SingleInstanceGuard,
-    WindowRoundStyle,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tracing::{error, info, warn};
@@ -430,7 +429,6 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
         kind: WindowKind::PopUp,
         titlebar: None,
         window_decorations: Some(WindowDecorations::Client),
-        window_background: initial_window_background(true),
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
@@ -439,19 +437,18 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
         ..Default::default()
     };
 
-    match open_rounded_window(
+    match open_floating_window(
         options,
-        true,
         crate::ui::panel::palette::CARD_BG,
         cx,
-        |round_style, window, cx| {
+        |rounded, window, cx| {
             cx.new(|cx| {
                 QuickActionMenu::new(
                     cursor,
                     captured_text,
                     parsed_timestamp,
                     open_editor_tx,
-                    round_style,
+                    rounded,
                     dismiss_watch,
                     window,
                     cx,
@@ -503,7 +500,6 @@ fn open_floating_panel(
         kind: WindowKind::Floating,
         titlebar: None,
         window_decorations: Some(WindowDecorations::Client),
-        window_background: initial_window_background(false),
         is_movable: true,
         is_resizable: true,
         is_minimizable: false,
@@ -512,17 +508,16 @@ fn open_floating_panel(
         ..Default::default()
     };
 
-    match open_rounded_window(
+    match open_floating_window(
         options,
-        false,
         crate::ui::panel::palette::SURFACE_BG,
         cx,
-        |round_style, window, cx| {
+        |rounded, window, cx| {
             cx.new(|cx| {
                 FloatingPanel::new(
                     initial_raw,
                     auto_hide_on_blur,
-                    round_style,
+                    rounded,
                     dismiss_watch,
                     window,
                     cx,
@@ -552,93 +547,48 @@ fn dismiss_window(tracked: Option<TrackedWindow>, cx: &mut App) {
     }
 }
 
-fn is_direct_composition_disabled() -> bool {
-    env::var("GPUI_DISABLE_DIRECT_COMPOSITION").is_ok_and(|value| value == "true" || value == "1")
+fn supports_transparent_surface() -> bool {
+    !cfg!(windows)
+        || !env::var("GPUI_DISABLE_DIRECT_COMPOSITION")
+            .is_ok_and(|value| value == "true" || value == "1")
 }
 
-fn initial_window_background(is_popup: bool) -> WindowBackgroundAppearance {
-    if cfg!(windows) {
-        if is_popup && !is_direct_composition_disabled() {
-            WindowBackgroundAppearance::Transparent
-        } else {
-            WindowBackgroundAppearance::Opaque
-        }
-    } else {
-        WindowBackgroundAppearance::Transparent
-    }
-}
-
-/// Configure OS-level rounded corner strategy for the given GPUI window handle.
-fn configure_os_window_rounding(window: &Window, is_popup: bool) -> WindowRoundStyle {
-    #[cfg(windows)]
-    {
-        let direct_composition_enabled = !is_direct_composition_disabled();
-        if let Ok(handle) = HasWindowHandle::window_handle(window)
-            && let RawWindowHandle::Win32(win32) = handle.as_raw()
-        {
-            return input_hook::configure_window_rounding(
-                win32.hwnd.get(),
-                is_popup,
-                direct_composition_enabled,
-            );
-        }
-        return if direct_composition_enabled {
-            WindowRoundStyle::TransparentSurface
-        } else {
-            WindowRoundStyle::SquareOpaque
-        };
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (window, is_popup);
-        WindowRoundStyle::TransparentSurface
-    }
-}
-
-/// Open a GPUI window with OS-matched rounded corners and matching `Root` surface background
-/// so unclipped white corner triangles never appear on Windows 10/11, VDI, or macOS.
-fn open_rounded_window<V: Render>(
-    options: WindowOptions,
-    is_popup: bool,
+/// Open a frameless floating GPUI window:
+/// - On macOS and Windows desktop (DirectComposition enabled), uses a transparent surface and
+///   disables Windows DWM non-client frame rendering so all 4 rounded corners are cleanly cut.
+/// - On Windows RDP/VDI (`GPUI_DISABLE_DIRECT_COMPOSITION=1`), falls back to an opaque square
+///   surface because `DXGI_ALPHA_MODE_IGNORE` cannot render transparent corners.
+fn open_floating_window<V: Render>(
+    mut options: WindowOptions,
     opaque_root_bg: u32,
     cx: &mut App,
-    build: impl FnOnce(WindowRoundStyle, &mut Window, &mut App) -> Entity<V>,
+    build: impl FnOnce(bool, &mut Window, &mut App) -> Entity<V>,
 ) -> Result<(AnyWindowHandle, Entity<V>)> {
+    let transparent = supports_transparent_surface();
+    options.window_background = if transparent {
+        WindowBackgroundAppearance::Transparent
+    } else {
+        WindowBackgroundAppearance::Opaque
+    };
+
     let mut built = None;
-    let initial_bg = options.window_background;
     let window = cx.open_window(options, |window, cx| {
-        let round_style = configure_os_window_rounding(window, is_popup);
-        let appearance = match round_style {
-            WindowRoundStyle::TransparentSurface => WindowBackgroundAppearance::Transparent,
-            WindowRoundStyle::NativeDwmRound | WindowRoundStyle::SquareOpaque => {
-                WindowBackgroundAppearance::Opaque
-            }
-        };
-        if appearance != initial_bg {
-            window.set_background_appearance(appearance);
-            // Re-assert DWM attributes (such as DWMNCRP_DISABLED) after updating composition attributes.
-            let _ = configure_os_window_rounding(window, is_popup);
+        if transparent && let Some(hwnd) = native_window_handle(window) {
+            input_hook::disable_dwm_window_frame(hwnd);
         }
-        info!(
-            ?round_style,
-            is_popup,
-            direct_composition_disabled = is_direct_composition_disabled(),
-            "configured window rounding"
-        );
-        let view = build(round_style, window, cx);
+        let view = build(transparent, window, cx);
         built = Some(view.clone());
         cx.new(|cx| {
             let root = gpui_kit::base::Root::new(view, window, cx);
-            match round_style {
-                WindowRoundStyle::TransparentSurface => root.bg(transparent_black()),
-                WindowRoundStyle::NativeDwmRound | WindowRoundStyle::SquareOpaque => {
-                    root.bg(rgb(opaque_root_bg))
-                }
+            if transparent {
+                root.bg(transparent_black())
+            } else {
+                root.bg(rgb(opaque_root_bg))
             }
         })
     })?;
     Ok((
         window.into(),
-        built.expect("open_rounded_window ran its build closure"),
+        built.expect("open_floating_window ran its build closure"),
     ))
 }

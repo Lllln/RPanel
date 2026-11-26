@@ -7,7 +7,7 @@ use gpui_kit::{
     ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Window, actions, div,
     px, rgb,
 };
-use input_hook::{DismissWatchGuard, WindowRoundStyle};
+use input_hook::DismissWatchGuard;
 use json_engine::{SourceFormat, ValidationStatus};
 
 use crate::state::{FeedbackKind, PanelDocumentState, PanelFeedback};
@@ -84,7 +84,7 @@ pub struct FloatingPanel {
     editor: Entity<EditorState>,
     doc: PanelDocumentState,
     last_applied_text: Option<String>,
-    round_style: WindowRoundStyle,
+    rounded: bool,
     opened_at: Instant,
     ever_activated: bool,
     auto_hide_on_blur: bool,
@@ -96,7 +96,7 @@ impl FloatingPanel {
     pub fn new(
         initial_raw: Option<String>,
         auto_hide_on_blur: bool,
-        round_style: WindowRoundStyle,
+        rounded: bool,
         dismiss_watch: Option<DismissWatchGuard>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -153,7 +153,7 @@ impl FloatingPanel {
             editor,
             doc,
             last_applied_text: None,
-            round_style,
+            rounded,
             opened_at: Instant::now(),
             ever_activated,
             auto_hide_on_blur,
@@ -335,21 +335,16 @@ impl Render for FloatingPanel {
             .text_color(rgb(palette::INK_PRIMARY))
             .overflow_hidden();
 
+        let shell = shell
+            .border_1()
+            .border_color(rgb(palette::BORDER_OUTER));
+
         // GPUI's `overflow_hidden()` clips to a rectangle rather than rounded corners, so
         // top/bottom bars with their own background must match the shell's inner corner radius.
-        let (shell, inner_radius) = match self.round_style {
-            WindowRoundStyle::NativeDwmRound => (shell, px(0.0)),
-            WindowRoundStyle::SquareOpaque => (
-                shell.border_1().border_color(rgb(palette::BORDER_OUTER)),
-                px(0.0),
-            ),
-            WindowRoundStyle::TransparentSurface => (
-                shell
-                    .border_1()
-                    .border_color(rgb(palette::BORDER_OUTER))
-                    .rounded(px(12.0)),
-                px(11.0),
-            ),
+        let (shell, inner_radius) = if self.rounded {
+            (shell.rounded(px(12.0)), px(11.0))
+        } else {
+            (shell, px(0.0))
         };
 
         let info_feedback = self

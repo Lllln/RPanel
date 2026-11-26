@@ -19,8 +19,7 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Dwm::{
     DWM_WINDOW_CORNER_PREFERENCE, DWMNCRENDERINGPOLICY, DWMNCRP_DISABLED, DWMWCP_DONOTROUND,
-    DWMWCP_ROUND, DWMWA_BORDER_COLOR, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE,
-    DwmSetWindowAttribute,
+    DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
 use windows::Win32::System::Diagnostics::Debug::{
@@ -449,87 +448,32 @@ pub fn is_remote_desktop_session() -> bool {
     unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
 }
 
-/// Configure OS-level corner rounding for a Win32 `HWND` without using legacy `SetWindowRgn`
-/// (which DXGI flip-model and DirectComposition swapchains ignore, leaving opaque corner artifacts):
-/// 1. Borderless popups with DirectComposition enabled use premultiplied-alpha transparent surfaces
-///    directly on both Windows 10 and Windows 11.
-/// 2. Windows 11 panels (and popups when DirectComposition is disabled) use native anti-aliased
-///    DWM rounding (`DWMWCP_ROUND`) and hairline border (`DWMWA_BORDER_COLOR`).
-/// 3. Windows 10 desktop panels with DirectComposition enabled use premultiplied-alpha transparency.
-/// 4. Windows 10 / Server / VDI with DirectComposition disabled (`DXGI_ALPHA_MODE_IGNORE`) use
-///    clean flush square corners instead of drawing fake rounded borders over an opaque rectangle.
-pub fn configure_window_rounding(
-    hwnd_raw: isize,
-    is_popup: bool,
-    direct_composition_enabled: bool,
-) -> crate::WindowRoundStyle {
+/// Disable DWM non-client frame/titlebar rendering (`DWMNCRP_DISABLED`) and native corner
+/// rounding (`DWMWCP_DONOTROUND`) on a transparent DirectComposition `HWND`, so Windows 10
+/// never shows its ~30px top caption strip behind transparent top corners and Windows 11 DWM
+/// does not clip or clash with GPUI's custom rounded frame.
+pub fn disable_dwm_window_frame(hwnd_raw: isize) {
     if hwnd_raw == 0 {
-        return if direct_composition_enabled {
-            crate::WindowRoundStyle::TransparentSurface
-        } else {
-            crate::WindowRoundStyle::SquareOpaque
-        };
+        return;
     }
 
     let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
-
-    // Frameless popups (`WindowKind::PopUp`, style=0) have no Win32 thick frame. When
-    // DirectComposition is active, per-pixel premultiplied alpha gives smooth anti-aliased
-    // rounded corners on both Windows 10 and Windows 11. Disable DWM non-client rendering
-    // so Windows 10 never draws its opaque white top caption strip behind the top rounded corners.
-    if is_popup && direct_composition_enabled {
-        disable_dwm_nc_rendering(hwnd);
-        let corner_pref = DWMWCP_DONOTROUND;
-        unsafe {
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_WINDOW_CORNER_PREFERENCE,
-                &corner_pref as *const _ as *const std::ffi::c_void,
-                size_of::<DWM_WINDOW_CORNER_PREFERENCE>() as u32,
-            );
-        }
-        return crate::WindowRoundStyle::TransparentSurface;
-    }
-
-    // Try Windows 11 native anti-aliased DWM rounded corners + matching hairline border.
-    let corner_pref = DWMWCP_ROUND;
-    let dwm_ok = unsafe {
-        DwmSetWindowAttribute(
+    let nc_policy = DWMNCRP_DISABLED;
+    let corner_pref = DWMWCP_DONOTROUND;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY,
+            &nc_policy as *const _ as *const std::ffi::c_void,
+            size_of::<DWMNCRENDERINGPOLICY>() as u32,
+        );
+        let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE,
             &corner_pref as *const _ as *const std::ffi::c_void,
             size_of::<DWM_WINDOW_CORNER_PREFERENCE>() as u32,
-        )
-        .is_ok()
-    };
-
-    if dwm_ok {
-        // COLORREF is 0x00BBGGRR: matches our subtle Apple border `#D2D2D7`.
-        // Note: DwmSetWindowAttribute updates DWM directly without needing SetWindowPos,
-        // avoiding synchronous WndProc re-entrancy while GPUI holds App borrows in open_window.
-        let border_color: u32 = 0x00D7_D2D2;
-        unsafe {
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_BORDER_COLOR,
-                &border_color as *const _ as *const std::ffi::c_void,
-                size_of::<u32>() as u32,
-            );
-        }
-        return crate::WindowRoundStyle::NativeDwmRound;
+        );
     }
-
-    // Windows 10 desktop with DirectComposition enabled supports true per-pixel alpha transparency.
-    // Disable DWM non-client rendering so Windows 10 does not paint a white titlebar strip behind
-    // the top-left and top-right rounded corners when WM_NCCALCSIZE removes the native titlebar.
-    if direct_composition_enabled {
-        disable_dwm_nc_rendering(hwnd);
-        return crate::WindowRoundStyle::TransparentSurface;
-    }
-
-    // Windows 10 / Windows Server / VDI with DirectComposition disabled uses an opaque flip-model
-    // swapchain (`DXGI_ALPHA_MODE_IGNORE`) that ignores `SetWindowRgn`; render flush square edges.
-    crate::WindowRoundStyle::SquareOpaque
 }
 
 /// Check whether a raw Win32 physical screen point lies inside the `HWND`'s window rectangle.
@@ -547,20 +491,6 @@ pub fn window_contains_screen_point(hwnd_raw: isize, point: ScreenPoint) -> Opti
             && point.y >= rect.top
             && point.y < rect.bottom,
     )
-}
-
-/// Disable Windows DWM non-client frame/titlebar rendering for custom transparent DirectComposition
-/// windows so the ~30px white Windows 10 caption strip never shows through transparent top corners.
-fn disable_dwm_nc_rendering(hwnd: HWND) {
-    let policy = DWMNCRP_DISABLED;
-    unsafe {
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_NCRENDERING_POLICY,
-            &policy as *const _ as *const std::ffi::c_void,
-            size_of::<DWMNCRENDERINGPOLICY>() as u32,
-        );
-    }
 }
 
 static VEH_LOGGED: AtomicBool = AtomicBool::new(false);

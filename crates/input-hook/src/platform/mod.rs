@@ -72,20 +72,15 @@ pub fn install_native_crash_handler() {
     }
 }
 
-pub fn configure_window_rounding(
-    hwnd_raw: isize,
-    is_popup: bool,
-    direct_composition_enabled: bool,
-) -> crate::WindowRoundStyle {
+pub fn disable_dwm_window_frame(hwnd_raw: isize) {
     #[cfg(windows)]
     {
-        windows::configure_window_rounding(hwnd_raw, is_popup, direct_composition_enabled)
+        windows::disable_dwm_window_frame(hwnd_raw);
     }
 
     #[cfg(not(windows))]
     {
-        let _ = (hwnd_raw, is_popup, direct_composition_enabled);
-        crate::WindowRoundStyle::TransparentSurface
+        let _ = hwnd_raw;
     }
 }
 

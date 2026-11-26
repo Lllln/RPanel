@@ -224,27 +224,11 @@ pub fn install_native_crash_handler() {
     platform::install_native_crash_handler();
 }
 
-/// How the OS window frame handles rounded corners on the current platform.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowRoundStyle {
-    /// Windows 11 DWM native anti-aliased rounded corners (`DWMWCP_ROUND`) and border.
-    NativeDwmRound,
-    /// macOS or Windows DirectComposition per-pixel alpha-composited rounded corners.
-    TransparentSurface,
-    /// Windows 10 / Server / VDI without DWM corner rounding or DirectComposition alpha
-    /// (`DXGI_ALPHA_MODE_IGNORE` flip-model swapchain): render flush square corners so
-    /// unclipped white corner triangles never appear.
-    SquareOpaque,
-}
-
-/// Configure OS-level window corner handling for a Win32 `HWND` based on DWM capability
-/// and whether GPUI's DirectComposition alpha swapchain is active.
-pub fn configure_window_rounding(
-    hwnd_raw: isize,
-    is_popup: bool,
-    direct_composition_enabled: bool,
-) -> WindowRoundStyle {
-    platform::configure_window_rounding(hwnd_raw, is_popup, direct_composition_enabled)
+/// Disable the Windows DWM non-client frame/caption rendering (`DWMNCRP_DISABLED`) and native
+/// corner clipping (`DWMWCP_DONOTROUND`) for a transparent DirectComposition `HWND`, so Windows 10
+/// never shows its top ~30px caption strip behind transparent rounded top corners.
+pub fn disable_dwm_window_frame(hwnd_raw: isize) {
+    platform::disable_dwm_window_frame(hwnd_raw);
 }
 
 /// Check whether a raw OS hook screen coordinate lies inside a native window's bounding rectangle.

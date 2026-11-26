@@ -7,7 +7,7 @@ use gpui_kit::{
     ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Window, actions, div,
     px, rgb,
 };
-use input_hook::{DismissWatchGuard, ScreenPoint, WindowRoundStyle};
+use input_hook::{DismissWatchGuard, ScreenPoint};
 use json_engine::ParsedTimestamp;
 
 use crate::ui::panel::palette;
@@ -45,7 +45,7 @@ pub struct QuickActionMenu {
     captured_text: Option<String>,
     parsed_timestamp: Option<ParsedTimestamp>,
     open_editor_tx: Sender<OpenEditorRequest>,
-    round_style: WindowRoundStyle,
+    rounded: bool,
     opened_at: Instant,
     ever_activated: bool,
     _dismiss_watch: Option<DismissWatchGuard>,
@@ -59,7 +59,7 @@ impl QuickActionMenu {
         captured_text: Option<String>,
         parsed_timestamp: Option<ParsedTimestamp>,
         open_editor_tx: Sender<OpenEditorRequest>,
-        round_style: WindowRoundStyle,
+        rounded: bool,
         dismiss_watch: Option<DismissWatchGuard>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -82,7 +82,7 @@ impl QuickActionMenu {
             captured_text,
             parsed_timestamp,
             open_editor_tx,
-            round_style,
+            rounded,
             opened_at: Instant::now(),
             ever_activated,
             _dismiss_watch: dismiss_watch,
@@ -139,15 +139,13 @@ impl Render for QuickActionMenu {
             .justify_center()
             .overflow_hidden();
 
-        let container = match self.round_style {
-            WindowRoundStyle::NativeDwmRound => container,
-            WindowRoundStyle::SquareOpaque => {
-                container.border_1().border_color(rgb(palette::BORDER_OUTER))
-            }
-            WindowRoundStyle::TransparentSurface => container
-                .border_1()
-                .border_color(rgb(palette::BORDER_OUTER))
-                .rounded(px(12.0)),
+        let container = container
+            .border_1()
+            .border_color(rgb(palette::BORDER_OUTER));
+        let container = if self.rounded {
+            container.rounded(px(12.0))
+        } else {
+            container
         };
 
         let timestamp_section = self.parsed_timestamp.as_ref().map(|ts| {
