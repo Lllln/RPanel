@@ -128,10 +128,6 @@ impl FloatingPanel {
             }
         });
 
-        let bounds_sub = cx.observe_window_bounds(window, |this, window, _cx| {
-            this.round_style = crate::apply_os_window_rounding(window, 10);
-        });
-
         Self {
             focus_handle: cx.focus_handle(),
             editor,
@@ -139,7 +135,7 @@ impl FloatingPanel {
             round_style,
             opened_at: Instant::now(),
             auto_hide_on_blur,
-            _subscriptions: vec![editor_sub, activation_sub, bounds_sub],
+            _subscriptions: vec![editor_sub, activation_sub],
         }
     }
 
@@ -298,22 +294,28 @@ impl Render for FloatingPanel {
             .text_color(rgb(palette::INK_PRIMARY))
             .overflow_hidden();
 
-        let shell = match self.round_style {
-            WindowRoundStyle::NativeDwmRound => shell,
-            WindowRoundStyle::RegionClipped => shell
-                .border_1()
-                .border_color(rgb(palette::BORDER_OUTER))
-                .rounded(px(10.0)),
-            WindowRoundStyle::TransparentSurface => shell
-                .border_1()
-                .border_color(rgb(palette::BORDER_OUTER))
-                .rounded(px(12.0)),
+        // GPUI's `overflow_hidden()` clips to a rectangle rather than rounded corners, so
+        // top/bottom bars with their own background must match the shell's inner corner radius.
+        let (shell, inner_radius) = match self.round_style {
+            WindowRoundStyle::NativeDwmRound => (shell, px(0.0)),
+            WindowRoundStyle::SquareOpaque => (
+                shell.border_1().border_color(rgb(palette::BORDER_OUTER)),
+                px(0.0),
+            ),
+            WindowRoundStyle::TransparentSurface => (
+                shell
+                    .border_1()
+                    .border_color(rgb(palette::BORDER_OUTER))
+                    .rounded(px(12.0)),
+                px(11.0),
+            ),
         };
 
         shell
             .child(render_toolbar(
                 self.doc.source_format,
                 self.doc.feedback.as_deref(),
+                inner_radius,
                 callbacks,
                 cx,
             ))
@@ -337,6 +339,7 @@ impl Render for FloatingPanel {
                 &self.doc.validation,
                 self.doc.line_count,
                 self.doc.char_count,
+                inner_radius,
                 on_jump_error,
             ))
     }

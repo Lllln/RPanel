@@ -1,6 +1,6 @@
 use gpui_kit::{
-    App, ClickEvent, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, Window, div, px, rgb,
+    App, ClickEvent, InteractiveElement, IntoElement, ParentElement, Pixels,
+    StatefulInteractiveElement, Styled, Window, div, px, rgb,
 };
 use json_engine::ValidationStatus;
 
@@ -11,6 +11,7 @@ pub fn render_status_bar(
     status: &ValidationStatus,
     line_count: usize,
     char_count: usize,
+    bottom_corner_radius: Pixels,
     on_jump_error: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let (dot_color, text_color, label, is_error) = match status {
@@ -65,6 +66,8 @@ pub fn render_status_bar(
         .h(px(32.0))
         .px(px(14.0))
         .bg(rgb(palette::HEADER_BG))
+        .rounded_bl(bottom_corner_radius)
+        .rounded_br(bottom_corner_radius)
         .border_t_1()
         .border_color(rgb(palette::BORDER_SUBTLE))
         .child(status_pill)

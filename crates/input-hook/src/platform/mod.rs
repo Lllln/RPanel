@@ -72,19 +72,19 @@ pub fn install_native_crash_handler() {
     }
 }
 
-pub fn apply_rounded_window(
+pub fn configure_window_rounding(
     hwnd_raw: isize,
-    radius_logical_px: i32,
-    scale_factor: f32,
+    is_popup: bool,
+    direct_composition_enabled: bool,
 ) -> crate::WindowRoundStyle {
     #[cfg(windows)]
     {
-        windows::apply_rounded_window(hwnd_raw, radius_logical_px, scale_factor)
+        windows::configure_window_rounding(hwnd_raw, is_popup, direct_composition_enabled)
     }
 
     #[cfg(not(windows))]
     {
-        let _ = (hwnd_raw, radius_logical_px, scale_factor);
+        let _ = (hwnd_raw, is_popup, direct_composition_enabled);
         crate::WindowRoundStyle::TransparentSurface
     }
 }

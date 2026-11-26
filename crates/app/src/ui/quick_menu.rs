@@ -58,10 +58,6 @@ impl QuickActionMenu {
             }
         });
 
-        let bounds_sub = cx.observe_window_bounds(window, |this, window, _cx| {
-            this.round_style = crate::apply_os_window_rounding(window, 10);
-        });
-
         Self {
             focus_handle,
             cursor,
@@ -69,7 +65,7 @@ impl QuickActionMenu {
             open_editor_tx,
             round_style,
             opened_at: Instant::now(),
-            _subscriptions: vec![activation_sub, bounds_sub],
+            _subscriptions: vec![activation_sub],
         }
     }
 
@@ -113,10 +109,9 @@ impl Render for QuickActionMenu {
 
         let container = match self.round_style {
             WindowRoundStyle::NativeDwmRound => container,
-            WindowRoundStyle::RegionClipped => container
-                .border_1()
-                .border_color(rgb(palette::BORDER_OUTER))
-                .rounded(px(10.0)),
+            WindowRoundStyle::SquareOpaque => {
+                container.border_1().border_color(rgb(palette::BORDER_OUTER))
+            }
             WindowRoundStyle::TransparentSurface => container
                 .border_1()
                 .border_color(rgb(palette::BORDER_OUTER))

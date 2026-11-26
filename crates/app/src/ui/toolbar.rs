@@ -1,7 +1,7 @@
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::{Sizable, StyledExt};
 use gpui_kit::{
-    App, ClickEvent, InteractiveElement, IntoElement, ParentElement, Styled, Window,
+    App, ClickEvent, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Window,
     WindowControlArea, div, px, rgb,
 };
 use json_engine::SourceFormat;
@@ -24,6 +24,7 @@ pub struct ToolbarCallbacks {
 pub fn render_toolbar(
     source_format: SourceFormat,
     feedback: Option<&str>,
+    top_corner_radius: Pixels,
     callbacks: ToolbarCallbacks,
     cx: &App,
 ) -> impl IntoElement {
@@ -46,6 +47,8 @@ pub fn render_toolbar(
         .h(px(44.0))
         .px(px(14.0))
         .bg(rgb(palette::HEADER_BG))
+        .rounded_tl(top_corner_radius)
+        .rounded_tr(top_corner_radius)
         .border_b_1()
         .border_color(rgb(palette::BORDER_SUBTLE))
         .child(

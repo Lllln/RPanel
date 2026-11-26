@@ -190,20 +190,22 @@ pub fn install_native_crash_handler() {
 /// How the OS window frame handles rounded corners on the current platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowRoundStyle {
-    /// Windows 11 DWM native anti-aliased rounded corners (`DWMWCP_ROUND`, 8px) and border.
+    /// Windows 11 DWM native anti-aliased rounded corners (`DWMWCP_ROUND`) and border.
     NativeDwmRound,
-    /// Windows 10 / VDI Win32 region clipping (`SetWindowRgn` + `CreateRoundRectRgn`).
-    RegionClipped,
-    /// macOS / transparent alpha-composited rounded corners.
+    /// macOS or Windows DirectComposition per-pixel alpha-composited rounded corners.
     TransparentSurface,
+    /// Windows 10 / Server / VDI without DWM corner rounding or DirectComposition alpha
+    /// (`DXGI_ALPHA_MODE_IGNORE` flip-model swapchain): render flush square corners so
+    /// unclipped white corner triangles never appear.
+    SquareOpaque,
 }
 
-/// Apply native OS-level rounded window corners to a Win32 `HWND` so rectangular 90-degree
-/// window outlines never appear (works on Windows 11, Windows 10, and VDI without DirectComposition).
-pub fn apply_rounded_window(
+/// Configure OS-level window corner handling for a Win32 `HWND` based on DWM capability
+/// and whether GPUI's DirectComposition alpha swapchain is active.
+pub fn configure_window_rounding(
     hwnd_raw: isize,
-    radius_logical_px: i32,
-    scale_factor: f32,
+    is_popup: bool,
+    direct_composition_enabled: bool,
 ) -> WindowRoundStyle {
-    platform::apply_rounded_window(hwnd_raw, radius_logical_px, scale_factor)
+    platform::configure_window_rounding(hwnd_raw, is_popup, direct_composition_enabled)
 }
