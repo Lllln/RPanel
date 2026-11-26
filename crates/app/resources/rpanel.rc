@@ -1,0 +1,2 @@
+// Windows executable & taskbar icon (Resource ID 1 is also loaded automatically by GPUI's `load_icon()`).
+1 ICON "icon.ico"

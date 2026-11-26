@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="1024" height="1024">
+  <defs>
+    <!-- Continuous macOS Squircle (108x108 centered in 128x128) -->
+    <path id="squircle" d="M 64 10 C 98 10, 118 10, 118 64 C 118 118, 98 118, 64 118 C 30 118, 10 118, 10 64 C 10 10, 30 10, 64 10 Z" />
+
+    <filter id="icon-shadow" x="-15%" y="-12%" width="130%" height="134%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4.5" flood-color="#000000" flood-opacity="0.20" />
+    </filter>
+    <filter id="blue-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#007AFF" flood-opacity="0.38" />
+    </filter>
+
+    <!-- B2 Apple Light Titanium Palette -->
+    <linearGradient id="bg-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#E3E7F0" />
+    </linearGradient>
+    <linearGradient id="rim-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#C0C7D6" stop-opacity="0.72" />
+    </linearGradient>
+    <linearGradient id="ink-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2C2C30" />
+      <stop offset="100%" stop-color="#141416" />
+    </linearGradient>
+    <linearGradient id="blue-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2C96FF" />
+      <stop offset="100%" stop-color="#0062DE" />
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle Base -->
+  <g filter="url(#icon-shadow)">
+    <use href="#squircle" fill="url(#bg-grad)" />
+    <use href="#squircle" fill="none" stroke="url(#rim-grad)" stroke-width="1.5" />
+  </g>
+
+  <!-- Deep Graphite Spine of Geometric 'R' -->
+  <rect x="31" y="29" width="17" height="70" rx="8.5" fill="url(#ink-grad)" />
+
+  <!-- Vivid Apple Blue Floating Panel Bowl -->
+  <g filter="url(#blue-glow)">
+    <rect x="54" y="29" width="44" height="35" rx="12" fill="url(#blue-grad)" />
+    <rect x="63" y="40.5" width="26" height="4.8" rx="2.4" fill="#FFFFFF" fill-opacity="0.96" />
+    <rect x="63" y="49.2" width="16" height="4.2" rx="2.1" fill="#FFFFFF" fill-opacity="0.55" />
+  </g>
+
+  <!-- Deep Graphite Rounded Diagonal Leg -->
+  <path d="M 59 71 C 62 71 65 72.5 67 75 L 82 91 C 85.2 94.5 83.2 99 78.6 99 L 71 99 C 68 99 65.2 97.6 63.3 95.3 L 52.5 82 C 49.5 78.3 52 71 57 71 Z" fill="url(#ink-grad)" />
+
+  <!-- Right-Click Trigger Accent Dot -->
+  <circle cx="91" cy="75" r="4.5" fill="#007AFF" />
+</svg>

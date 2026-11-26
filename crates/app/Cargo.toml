@@ -15,3 +15,6 @@ tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle.workspace = true
+
+[build-dependencies]
+embed-resource = "3"

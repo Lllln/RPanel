@@ -67,7 +67,7 @@ impl TrayController {
 
         let icon = build_tray_icon()?;
         let builder = TrayIconBuilder::new()
-            .with_tooltip("RPanel — Right-Click Hold JSON Inspector")
+            .with_tooltip("RPanel — Right-Click Floating Utility Panel")
             .with_menu(Box::new(menu));
         #[cfg(target_os = "macos")]
         let builder = builder.with_icon_templated(icon);
@@ -126,78 +126,17 @@ impl TrayController {
     }
 }
 
-/// Generate a crisp 32x32 RGBA rounded-square tray icon with `{ }` braces.
+/// Load the pre-rendered 32x32 RGBA RPanel B2 tray icon (monochrome template on macOS,
+/// full-color silver-titanium + Apple blue badge on Windows).
 fn build_tray_icon() -> Result<Icon, String> {
-    const SIZE: usize = 32;
-    let mut rgba = vec![0u8; SIZE * SIZE * 4];
+    const SIZE: u32 = 32;
+    #[cfg(target_os = "macos")]
+    const RAW_RGBA: &[u8] = include_bytes!("../../../assets/tray-macos-32.rgba");
+    #[cfg(not(target_os = "macos"))]
+    const RAW_RGBA: &[u8] = include_bytes!("../../../assets/tray-windows-32.rgba");
 
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let fx = x as f32 + 0.5;
-            let fy = y as f32 + 0.5;
-            let idx = (y * SIZE + x) * 4;
-
-            // Signed distance to a centered rounded square (size 26x26, radius 6).
-            let dx = (fx - 16.0).abs() - 7.0;
-            let dy = (fy - 16.0).abs() - 7.0;
-            let dist = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt()
-                + dx.max(dy).min(0.0)
-                - 6.0;
-
-            if dist <= 0.6 {
-                let alpha = ((0.6 - dist).clamp(0.0, 1.0) * 255.0) as u8;
-                let in_glyph = is_brace_glyph(x, y);
-
-                if cfg!(target_os = "macos") {
-                    // Monochrome template icon: solid black border/glyph on transparent.
-                    let is_border = dist > -1.8;
-                    if is_border || in_glyph {
-                        rgba[idx] = 0;
-                        rgba[idx + 1] = 0;
-                        rgba[idx + 2] = 0;
-                        rgba[idx + 3] = alpha;
-                    }
-                } else {
-                    // Windows tray icon: restrained dark slate tile with crisp white `{}` glyph.
-                    if in_glyph {
-                        rgba[idx] = 255;
-                        rgba[idx + 1] = 255;
-                        rgba[idx + 2] = 255;
-                        rgba[idx + 3] = 255;
-                    } else {
-                        rgba[idx] = 29;
-                        rgba[idx + 1] = 29;
-                        rgba[idx + 2] = 31;
-                        rgba[idx + 3] = alpha;
-                    }
-                }
-            }
-        }
-    }
-
-    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).map_err(|e| {
+    Icon::from_rgba(RAW_RGBA.to_vec(), SIZE, SIZE).map_err(|e| {
         warn!("failed to construct RGBA tray icon: {e}");
         e.to_string()
     })
-}
-
-fn is_brace_glyph(x: usize, y: usize) -> bool {
-    // Symmetric minimal `{ }` pixel glyph inside 32x32 tile.
-    let left_brace = matches!(
-        (x, y),
-        (11..=13, 9..=10)
-            | (10..=11, 11..=14)
-            | (8..=10, 15..=16)
-            | (10..=11, 17..=20)
-            | (11..=13, 21..=22)
-    );
-    let right_brace = matches!(
-        (x, y),
-        (18..=20, 9..=10)
-            | (20..=21, 11..=14)
-            | (21..=23, 15..=16)
-            | (20..=21, 17..=20)
-            | (18..=20, 21..=22)
-    );
-    left_brace || right_brace
 }
