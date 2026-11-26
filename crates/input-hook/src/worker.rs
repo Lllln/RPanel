@@ -27,6 +27,10 @@ pub enum WorkerCommand {
     TriggerLongPress {
         position: ScreenPoint,
     },
+    GlobalMouseDown {
+        position: ScreenPoint,
+        at: Instant,
+    },
     Shutdown,
 }
 
@@ -107,6 +111,11 @@ fn worker_loop<A: PlatformActions>(
             WorkerCommand::TriggerLongPress { position } => {
                 armed = None;
                 emit_long_press(position, &event_tx, &actions);
+            }
+            WorkerCommand::GlobalMouseDown { position, at } => {
+                if let Err(err) = event_tx.send(HookEvent::GlobalMouseDown { position, at }) {
+                    warn!("failed to deliver GlobalMouseDown to receiver: {err}");
+                }
             }
             WorkerCommand::Shutdown => break,
         }

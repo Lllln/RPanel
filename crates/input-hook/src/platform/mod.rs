@@ -89,6 +89,27 @@ pub fn configure_window_rounding(
     }
 }
 
+pub fn window_contains_screen_point(
+    native_handle: isize,
+    point: crate::ScreenPoint,
+) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::window_contains_screen_point(native_handle, point)
+    }
+
+    #[cfg(windows)]
+    {
+        windows::window_contains_screen_point(native_handle, point)
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (native_handle, point);
+        None
+    }
+}
+
 #[cfg(windows)]
 pub struct SingleInstanceGuardInner {
     _guard: windows::WinSingleInstanceGuard,

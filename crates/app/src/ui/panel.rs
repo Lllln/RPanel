@@ -1,12 +1,13 @@
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::{EditorState, InputEvent, Position};
 use gpui_kit::{
     App, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding,
     ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Window, actions, div,
     px, rgb,
 };
-use input_hook::WindowRoundStyle;
+use input_hook::{DismissWatchGuard, WindowRoundStyle};
 use json_engine::{SourceFormat, ValidationStatus};
 
 use crate::state::{FeedbackKind, PanelDocumentState, PanelFeedback};
@@ -70,6 +71,9 @@ pub mod palette {
     pub const ERR_TINT: u32 = 0xFFF2F1;
     pub const ERR_BORDER: u32 = 0xFFD6D3;
     pub const ERR_TEXT: u32 = 0xD70015;
+    pub const TS_TINT: u32 = 0xEBF9EE;
+    pub const TS_BORDER: u32 = 0xCBEFD3;
+    pub const TS_ACCENT: u32 = 0x1D8F3A;
 }
 
 /// Grace period after opening before window deactivation triggers auto-hide.
@@ -82,7 +86,9 @@ pub struct FloatingPanel {
     last_applied_text: Option<String>,
     round_style: WindowRoundStyle,
     opened_at: Instant,
+    ever_activated: bool,
     auto_hide_on_blur: bool,
+    _dismiss_watch: Option<DismissWatchGuard>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -91,6 +97,7 @@ impl FloatingPanel {
         initial_raw: Option<String>,
         auto_hide_on_blur: bool,
         round_style: WindowRoundStyle,
+        dismiss_watch: Option<DismissWatchGuard>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -130,10 +137,12 @@ impl FloatingPanel {
             }
         });
 
+        let ever_activated = window.is_window_active();
         let activation_sub = cx.observe_window_activation(window, |this, window, _cx| {
-            if this.auto_hide_on_blur
-                && !window.is_window_active()
-                && this.opened_at.elapsed() >= FOCUS_LOSS_GRACE
+            if window.is_window_active() {
+                this.ever_activated = true;
+            } else if this.auto_hide_on_blur
+                && (this.ever_activated || this.opened_at.elapsed() >= FOCUS_LOSS_GRACE)
             {
                 window.remove_window();
             }
@@ -146,7 +155,9 @@ impl FloatingPanel {
             last_applied_text: None,
             round_style,
             opened_at: Instant::now(),
+            ever_activated,
             auto_hide_on_blur,
+            _dismiss_watch: dismiss_watch,
             _subscriptions: vec![editor_sub, activation_sub],
         }
     }
@@ -246,6 +257,19 @@ impl FloatingPanel {
             return;
         }
         window.remove_window();
+    }
+
+    fn copy_detected_timestamp(&mut self, cx: &mut Context<Self>) {
+        let Some(ts) = &self.doc.detected_timestamp else {
+            return;
+        };
+        let formatted = ts.local_datetime.clone();
+        if let Err(err) = input_hook::clipboard::write_clipboard_text(&formatted) {
+            self.set_error_feedback(format!("复制时间失败：{err}"), cx);
+            return;
+        }
+        self.doc.feedback = Some(PanelFeedback::info("已复制时间"));
+        cx.notify();
     }
 
     fn jump_to_error(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -403,6 +427,80 @@ impl Render for FloatingPanel {
                 )
         });
 
+        let on_copy_timestamp =
+            cx.listener(|this, _, _, cx| this.copy_detected_timestamp(cx));
+        let timestamp_banner = self.doc.detected_timestamp.as_ref().map(|ts| {
+            let unit_label = ts.unit.label_zh();
+            let datetime = ts.local_datetime.clone();
+            let tz = ts.timezone_label.clone();
+
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .px(px(14.0))
+                .py(px(6.0))
+                .bg(rgb(palette::TS_TINT))
+                .border_b_1()
+                .border_color(rgb(palette::TS_BORDER))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .size(px(6.0))
+                                .rounded_full()
+                                .bg(rgb(palette::STATUS_OK)),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(rgb(palette::TS_ACCENT))
+                                .child(format!("时间戳 ({unit_label}) →")),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(rgb(palette::INK_PRIMARY))
+                                .whitespace_nowrap()
+                                .child(datetime),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(palette::INK_SECONDARY))
+                                .whitespace_nowrap()
+                                .child(format!("({tz})")),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("timestamp-banner-copy")
+                        .flex_shrink_0()
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(5.0))
+                        .bg(rgb(palette::CARD_BG))
+                        .border_1()
+                        .border_color(rgb(palette::TS_BORDER))
+                        .cursor_pointer()
+                        .text_xs()
+                        .font_medium()
+                        .text_color(rgb(palette::TS_ACCENT))
+                        .hover(|s| s.bg(rgb(palette::TS_BORDER)))
+                        .on_click(on_copy_timestamp)
+                        .child("复制时间"),
+                )
+        });
+
         shell
             .child(render_toolbar(
                 self.doc.source_format,
@@ -411,6 +509,7 @@ impl Render for FloatingPanel {
                 callbacks,
                 cx,
             ))
+            .children(timestamp_banner)
             .children(error_banner)
             .child(
                 div()

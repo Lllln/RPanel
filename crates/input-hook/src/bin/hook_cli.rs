@@ -74,6 +74,7 @@ fn main() {
                     None => println!("(no selection captured)"),
                 }
             }
+            HookEvent::GlobalMouseDown { .. } => {}
             HookEvent::PermissionRequired => {
                 eprintln!("[WARN] OS accessibility permission is required.");
             }

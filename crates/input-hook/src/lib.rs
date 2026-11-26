@@ -7,9 +7,9 @@ pub mod worker;
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use thiserror::Error;
@@ -60,6 +60,21 @@ impl Default for HookConfig {
 pub struct HookControl {
     enabled: AtomicBool,
     hold_ms: AtomicU64,
+    dismiss_watch_count: AtomicUsize,
+}
+
+/// RAII guard that keeps global mouse-down dismissal observation active while a popup/panel is open.
+#[derive(Debug)]
+pub struct DismissWatchGuard {
+    control: Arc<HookControl>,
+}
+
+impl Drop for DismissWatchGuard {
+    fn drop(&mut self) {
+        self.control
+            .dismiss_watch_count
+            .fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl HookControl {
@@ -67,6 +82,7 @@ impl HookControl {
         Self {
             enabled: AtomicBool::new(true),
             hold_ms: AtomicU64::new(config.hold_duration.as_millis() as u64),
+            dismiss_watch_count: AtomicUsize::new(0),
         }
     }
 
@@ -85,6 +101,21 @@ impl HookControl {
     pub fn set_hold_duration(&self, duration: Duration) {
         self.hold_ms
             .store((duration.as_millis() as u64).max(100), Ordering::Relaxed);
+    }
+
+    /// Returns `true` while at least one popup/panel wants to receive global mouse-down events
+    /// for click-outside auto-dismissal.
+    pub fn is_dismiss_watch_active(&self) -> bool {
+        self.dismiss_watch_count.load(Ordering::Acquire) > 0
+    }
+
+    /// Increment the active dismiss-watch reference count and return an RAII guard that
+    /// decrements it automatically when the popup/panel closes.
+    pub fn acquire_dismiss_watch(self: &Arc<Self>) -> DismissWatchGuard {
+        self.dismiss_watch_count.fetch_add(1, Ordering::AcqRel);
+        DismissWatchGuard {
+            control: Arc::clone(self),
+        }
     }
 }
 
@@ -108,6 +139,12 @@ pub enum HookEvent {
     LongPressTriggered {
         position: ScreenPoint,
         captured: CaptureResult,
+    },
+    /// Emitted (without swallowing) on global mouse-down while a popup/panel is open so the UI
+    /// can dismiss itself reliably whenever the user clicks outside its bounds.
+    GlobalMouseDown {
+        position: ScreenPoint,
+        at: Instant,
     },
     PermissionRequired,
 }
@@ -210,6 +247,17 @@ pub fn configure_window_rounding(
     platform::configure_window_rounding(hwnd_raw, is_popup, direct_composition_enabled)
 }
 
+/// Check whether a raw OS hook screen coordinate lies inside a native window's bounding rectangle.
+///
+/// - On macOS, `native_handle` is the `NSView*` pointer from `AppKitWindowHandle::ns_view`.
+/// - On Windows, `native_handle` is the `HWND` value from `Win32WindowHandle::hwnd`.
+///
+/// Returns `Some(true)` if inside, `Some(false)` if outside, or `None` if the handle could not
+/// be queried (e.g. window already closed).
+pub fn window_contains_screen_point(native_handle: isize, point: ScreenPoint) -> Option<bool> {
+    platform::window_contains_screen_point(native_handle, point)
+}
+
 /// Process-lifetime guard ensuring only a single instance of RPanel runs per user session.
 /// Dropping this guard releases the OS kernel lock (and the OS also releases it automatically on crash).
 pub struct SingleInstanceGuard {
@@ -243,5 +291,23 @@ mod tests {
 
         let third = acquire_single_instance(&id);
         assert!(third.is_some(), "acquisition should succeed again after guard is dropped");
+    }
+
+    #[test]
+    fn dismiss_watch_guard_tracks_active_window_count() {
+        let control = Arc::new(HookControl::new(HookConfig::default()));
+        assert!(!control.is_dismiss_watch_active());
+
+        let g1 = control.acquire_dismiss_watch();
+        assert!(control.is_dismiss_watch_active());
+
+        let g2 = control.acquire_dismiss_watch();
+        assert!(control.is_dismiss_watch_active());
+
+        drop(g1);
+        assert!(control.is_dismiss_watch_active());
+
+        drop(g2);
+        assert!(!control.is_dismiss_watch_active());
     }
 }

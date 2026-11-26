@@ -135,6 +135,8 @@ fn run_event_tap_loop(
     let cb_tap_port = Arc::clone(&tap_port_ptr);
 
     let events_of_interest = vec![
+        CGEventType::LeftMouseDown,
+        CGEventType::OtherMouseDown,
         CGEventType::RightMouseDown,
         CGEventType::RightMouseUp,
         CGEventType::RightMouseDragged,
@@ -225,6 +227,24 @@ fn handle_cg_event(
     let pos = ScreenPoint::new(loc.x.round() as i32, loc.y.round() as i32);
     let now = Instant::now();
 
+    if matches!(
+        event_type,
+        CGEventType::LeftMouseDown | CGEventType::RightMouseDown | CGEventType::OtherMouseDown
+    ) && control.is_dismiss_watch_active()
+    {
+        let _ = cmd_tx.send(WorkerCommand::GlobalMouseDown {
+            position: pos,
+            at: now,
+        });
+    }
+
+    if matches!(
+        event_type,
+        CGEventType::LeftMouseDown | CGEventType::OtherMouseDown
+    ) {
+        return CallbackResult::Keep;
+    }
+
     let action = {
         let mut sm = state.lock().unwrap_or_else(|e| e.into_inner());
         if !control.is_enabled() && sm.is_idle() {
@@ -306,4 +326,31 @@ pub fn capture_selection() -> Result<CaptureResult, HookError> {
             Err(err)
         }
     }
+}
+
+/// Check whether a Quartz global screen point (top-left origin) lies inside the `NSWindow`
+/// owning `ns_view_raw`.
+pub fn window_contains_screen_point(ns_view_raw: isize, point: ScreenPoint) -> Option<bool> {
+    if ns_view_raw == 0 {
+        return None;
+    }
+    // SAFETY: `ns_view_raw` is a live `NSView*` obtained from GPUI's AppKit window handle on the
+    // main thread; we check for null before messaging `frame`.
+    let frame: objc2_foundation::NSRect = unsafe {
+        let ns_view = ns_view_raw as *mut objc2::runtime::AnyObject;
+        let ns_window: *mut objc2::runtime::AnyObject = objc2::msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return None;
+        }
+        objc2::msg_send![ns_window, frame]
+    };
+
+    let primary_height = core_graphics::display::CGDisplay::main().bounds().size.height;
+    let left = frame.origin.x;
+    let right = frame.origin.x + frame.size.width;
+    let top = primary_height - (frame.origin.y + frame.size.height);
+    let bottom = primary_height - frame.origin.y;
+    let px = f64::from(point.x);
+    let py = f64::from(point.y);
+    Some(px >= left && px < right && py >= top && py < bottom)
 }

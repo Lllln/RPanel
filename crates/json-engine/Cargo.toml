@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+chrono.workspace = true
 csv.workspace = true
 form_urlencoded.workspace = true
 json5.workspace = true

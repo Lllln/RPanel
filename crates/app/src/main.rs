@@ -10,7 +10,7 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Sender, unbounded};
 use gpui_kit::component::{Theme, ThemeMode};
@@ -23,7 +23,6 @@ use input_hook::{
     HookConfig, HookControl, HookError, HookEvent, HookHandle, ScreenPoint, SingleInstanceGuard,
     WindowRoundStyle,
 };
-#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -36,10 +35,17 @@ use crate::ui::quick_menu::{
     OpenEditorRequest, QuickActionMenu, register_quick_menu_keybindings,
 };
 
+#[derive(Clone, Copy)]
+struct TrackedWindow {
+    handle: AnyWindowHandle,
+    opened_at: Instant,
+    dismiss_on_outside_click: bool,
+}
+
 struct AppRuntime {
     settings: AppSettings,
-    active_menu: Option<AnyWindowHandle>,
-    active_panel: Option<AnyWindowHandle>,
+    active_menu: Option<TrackedWindow>,
+    active_panel: Option<TrackedWindow>,
     open_editor_tx: Sender<OpenEditorRequest>,
     tray: Option<TrayController>,
     hook_control: Option<Arc<HookControl>>,
@@ -321,18 +327,102 @@ fn handle_hook_event(event: HookEvent, cx: &mut App) {
             let selected = captured.text.filter(|s| !s.trim().is_empty());
             open_quick_menu(Some(position), selected, cx);
         }
+        HookEvent::GlobalMouseDown { position, at } => {
+            handle_global_mouse_down(position, at, cx);
+        }
         HookEvent::PermissionRequired => {
             warn!("Accessibility permission required to intercept mouse events");
         }
     }
 }
 
+fn handle_global_mouse_down(position: ScreenPoint, at: Instant, cx: &mut App) {
+    let (menu, panel) = {
+        let runtime = cx.global::<AppRuntime>();
+        (runtime.active_menu, runtime.active_panel)
+    };
+
+    if let Some(tracked) = menu
+        && should_clear_after_outside_click(tracked, position, at, cx)
+    {
+        let runtime = cx.global_mut::<AppRuntime>();
+        if runtime
+            .active_menu
+            .is_some_and(|current| current.handle == tracked.handle)
+        {
+            runtime.active_menu = None;
+        }
+    }
+
+    if let Some(tracked) = panel
+        && should_clear_after_outside_click(tracked, position, at, cx)
+    {
+        let runtime = cx.global_mut::<AppRuntime>();
+        if runtime
+            .active_panel
+            .is_some_and(|current| current.handle == tracked.handle)
+        {
+            runtime.active_panel = None;
+        }
+    }
+}
+
+/// Inspect `tracked` against a global mouse-down at `position`.
+/// Closes the window if the click occurred after it opened and lies outside its OS bounds.
+/// Returns `true` when the tracked slot should be cleared (dismissed or already closed).
+fn should_clear_after_outside_click(
+    tracked: TrackedWindow,
+    position: ScreenPoint,
+    at: Instant,
+    cx: &mut App,
+) -> bool {
+    if !tracked.dismiss_on_outside_click || at <= tracked.opened_at {
+        return false;
+    }
+
+    tracked
+        .handle
+        .update(cx, |_, window, _| {
+            let Some(raw_handle) = native_window_handle(window) else {
+                return false;
+            };
+            if input_hook::window_contains_screen_point(raw_handle, position) == Some(false) {
+                window.remove_window();
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(true)
+}
+
+fn native_window_handle(window: &Window) -> Option<isize> {
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    match handle.as_raw() {
+        #[cfg(target_os = "macos")]
+        RawWindowHandle::AppKit(appkit) => Some(appkit.ns_view.as_ptr() as isize),
+        #[cfg(windows)]
+        RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
+        _ => None,
+    }
+}
+
 fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, cx: &mut App) {
-    let prev_menu = cx.global_mut::<AppRuntime>().active_menu.take();
+    let (prev_menu, open_editor_tx, dismiss_watch) = {
+        let runtime = cx.global_mut::<AppRuntime>();
+        let prev = runtime.active_menu.take();
+        let tx = runtime.open_editor_tx.clone();
+        let watch = runtime
+            .hook_control
+            .as_ref()
+            .map(|ctrl| ctrl.acquire_dismiss_watch());
+        (prev, tx, watch)
+    };
     dismiss_window(prev_menu, cx);
 
-    let open_editor_tx = cx.global::<AppRuntime>().open_editor_tx.clone();
-    let (display_id, bounds) = resolve_quick_menu_placement(cursor, cx);
+    let parsed_timestamp = captured_text.as_deref().and_then(json_engine::parse_timestamp);
+    let (display_id, bounds) =
+        resolve_quick_menu_placement(cursor, parsed_timestamp.is_some(), cx);
 
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -359,8 +449,10 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
                 QuickActionMenu::new(
                     cursor,
                     captured_text,
+                    parsed_timestamp,
                     open_editor_tx,
                     round_style,
+                    dismiss_watch,
                     window,
                     cx,
                 )
@@ -368,7 +460,11 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
         },
     ) {
         Ok((handle, _menu)) => {
-            cx.global_mut::<AppRuntime>().active_menu = Some(handle);
+            cx.global_mut::<AppRuntime>().active_menu = Some(TrackedWindow {
+                handle,
+                opened_at: Instant::now(),
+                dismiss_on_outside_click: true,
+            });
             cx.activate(true);
         }
         Err(err) => {
@@ -383,9 +479,19 @@ fn open_floating_panel(
     auto_hide_on_blur: bool,
     cx: &mut App,
 ) {
-    let (prev_menu, prev_panel) = {
+    let (prev_menu, prev_panel, dismiss_watch) = {
         let runtime = cx.global_mut::<AppRuntime>();
-        (runtime.active_menu.take(), runtime.active_panel.take())
+        let prev_menu = runtime.active_menu.take();
+        let prev_panel = runtime.active_panel.take();
+        let watch = if auto_hide_on_blur {
+            runtime
+                .hook_control
+                .as_ref()
+                .map(|ctrl| ctrl.acquire_dismiss_watch())
+        } else {
+            None
+        };
+        (prev_menu, prev_panel, watch)
     };
     dismiss_window(prev_menu, cx);
     dismiss_window(prev_panel, cx);
@@ -412,11 +518,24 @@ fn open_floating_panel(
         crate::ui::panel::palette::SURFACE_BG,
         cx,
         |round_style, window, cx| {
-            cx.new(|cx| FloatingPanel::new(initial_raw, auto_hide_on_blur, round_style, window, cx))
+            cx.new(|cx| {
+                FloatingPanel::new(
+                    initial_raw,
+                    auto_hide_on_blur,
+                    round_style,
+                    dismiss_watch,
+                    window,
+                    cx,
+                )
+            })
         },
     ) {
         Ok((handle, _panel)) => {
-            cx.global_mut::<AppRuntime>().active_panel = Some(handle);
+            cx.global_mut::<AppRuntime>().active_panel = Some(TrackedWindow {
+                handle,
+                opened_at: Instant::now(),
+                dismiss_on_outside_click: auto_hide_on_blur,
+            });
             cx.activate(true);
         }
         Err(err) => {
@@ -425,9 +544,9 @@ fn open_floating_panel(
     }
 }
 
-fn dismiss_window(handle: Option<AnyWindowHandle>, cx: &mut App) {
-    if let Some(handle) = handle {
-        let _ = handle.update(cx, |_, window, _| {
+fn dismiss_window(tracked: Option<TrackedWindow>, cx: &mut App) {
+    if let Some(tracked) = tracked {
+        let _ = tracked.handle.update(cx, |_, window, _| {
             window.remove_window();
         });
     }

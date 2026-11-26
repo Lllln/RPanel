@@ -2,9 +2,13 @@
 
 pub mod parsers;
 pub mod pipeline;
+pub mod timestamp;
 pub mod validate;
 
 pub use pipeline::{ConvertResult, SourceFormat, convert_to_json};
+pub use timestamp::{
+    ParsedTimestamp, TimestampUnit, detect_timestamp_in_editor, parse_timestamp,
+};
 pub use validate::{ValidationError, ValidationStatus, validate_json};
 
 use thiserror::Error;

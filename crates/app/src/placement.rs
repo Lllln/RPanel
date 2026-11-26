@@ -5,6 +5,8 @@ pub const PANEL_WIDTH: i32 = 680;
 pub const PANEL_HEIGHT: i32 = 480;
 pub const QUICK_MENU_WIDTH: i32 = 152;
 pub const QUICK_MENU_HEIGHT: i32 = 48;
+pub const QUICK_MENU_TIMESTAMP_WIDTH: i32 = 320;
+pub const QUICK_MENU_TIMESTAMP_HEIGHT: i32 = 112;
 pub const EDGE_MARGIN: i32 = 16;
 
 /// Logical rectangle representing a monitor work area or floating panel.
@@ -24,12 +26,18 @@ pub fn resolve_panel_placement(
     resolve_window_placement(cursor, PANEL_WIDTH, PANEL_HEIGHT, 14, cx)
 }
 
-/// Resolve the target display and clamped bounds for the compact "查看 JSON" quick menu.
+/// Resolve the target display and clamped bounds for the compact right-click quick menu.
 pub fn resolve_quick_menu_placement(
     cursor: Option<ScreenPoint>,
+    has_timestamp: bool,
     cx: &App,
 ) -> (Option<DisplayId>, Bounds<Pixels>) {
-    resolve_window_placement(cursor, QUICK_MENU_WIDTH, QUICK_MENU_HEIGHT, 10, cx)
+    let (width, height) = if has_timestamp {
+        (QUICK_MENU_TIMESTAMP_WIDTH, QUICK_MENU_TIMESTAMP_HEIGHT)
+    } else {
+        (QUICK_MENU_WIDTH, QUICK_MENU_HEIGHT)
+    };
+    resolve_window_placement(cursor, width, height, 10, cx)
 }
 
 fn resolve_window_placement(

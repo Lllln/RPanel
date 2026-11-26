@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ILLEGAL_INSTRUCTION,
     EXCEPTION_PRIV_INSTRUCTION, EXCEPTION_STACK_OVERFLOW, GetLastError, HANDLE, HINSTANCE, HWND,
-    LPARAM, LRESULT, POINT, WPARAM,
+    LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
     DWM_WINDOW_CORNER_PREFERENCE, DWMNCRENDERINGPOLICY, DWMNCRP_DISABLED, DWMWCP_DONOTROUND,
@@ -35,10 +35,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, GetSystemMetrics, HC_ACTION, MSG,
+    CallNextHookEx, DispatchMessageW, GetMessageW, GetSystemMetrics, GetWindowRect, HC_ACTION, MSG,
     MSLLHOOKSTRUCT, PostThreadMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_REMOTESESSION,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    WH_MOUSE_LL, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_XBUTTONDOWN,
 };
 
 use crate::state_machine::{LongPressStateMachine, StateAction};
@@ -241,7 +242,11 @@ unsafe extern "system" fn low_level_mouse_proc(
     }
 
     let msg_id = wparam.0 as u32;
-    if !matches!(msg_id, WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MOUSEMOVE) {
+    let is_mouse_down = matches!(
+        msg_id,
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+    );
+    if !is_mouse_down && !matches!(msg_id, WM_RBUTTONUP | WM_MOUSEMOVE) {
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
 
@@ -253,6 +258,17 @@ unsafe extern "system" fn low_level_mouse_proc(
         let Some(ctx) = borrow.as_ref() else {
             return false;
         };
+
+        if is_mouse_down && ctx.control.is_dismiss_watch_active() {
+            let _ = ctx.cmd_tx.send(WorkerCommand::GlobalMouseDown {
+                position: pos,
+                at: now,
+            });
+        }
+
+        if matches!(msg_id, WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN) {
+            return false;
+        }
 
         let action = {
             let mut sm = ctx.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -514,6 +530,23 @@ pub fn configure_window_rounding(
     // Windows 10 / Windows Server / VDI with DirectComposition disabled uses an opaque flip-model
     // swapchain (`DXGI_ALPHA_MODE_IGNORE`) that ignores `SetWindowRgn`; render flush square edges.
     crate::WindowRoundStyle::SquareOpaque
+}
+
+/// Check whether a raw Win32 physical screen point lies inside the `HWND`'s window rectangle.
+pub fn window_contains_screen_point(hwnd_raw: isize, point: ScreenPoint) -> Option<bool> {
+    if hwnd_raw == 0 {
+        return None;
+    }
+    let hwnd = HWND(hwnd_raw as *mut std::ffi::c_void);
+    let mut rect = RECT::default();
+    // SAFETY: `hwnd` is a live Win32 window handle queried on the UI thread.
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+    Some(
+        point.x >= rect.left
+            && point.x < rect.right
+            && point.y >= rect.top
+            && point.y < rect.bottom,
+    )
 }
 
 /// Disable Windows DWM non-client frame/titlebar rendering for custom transparent DirectComposition
