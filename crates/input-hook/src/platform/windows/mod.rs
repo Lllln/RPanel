@@ -17,8 +17,9 @@ use windows::Win32::Foundation::{
     EXCEPTION_STACK_OVERFLOW, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
-    DWM_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWA_BORDER_COLOR,
-    DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
+    DWM_WINDOW_CORNER_PREFERENCE, DWMNCRENDERINGPOLICY, DWMNCRP_DISABLED, DWMWCP_DONOTROUND,
+    DWMWCP_ROUND, DWMWA_BORDER_COLOR, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE,
+    DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
 use windows::Win32::System::Diagnostics::Debug::{
@@ -420,8 +421,10 @@ pub fn configure_window_rounding(
 
     // Frameless popups (`WindowKind::PopUp`, style=0) have no Win32 thick frame. When
     // DirectComposition is active, per-pixel premultiplied alpha gives smooth anti-aliased
-    // rounded corners on both Windows 10 and Windows 11 without relying on DWM toolwindow heuristics.
+    // rounded corners on both Windows 10 and Windows 11. Disable DWM non-client rendering
+    // so Windows 10 never draws its opaque white top caption strip behind the top rounded corners.
     if is_popup && direct_composition_enabled {
+        disable_dwm_nc_rendering(hwnd);
         let corner_pref = DWMWCP_DONOTROUND;
         unsafe {
             let _ = DwmSetWindowAttribute(
@@ -463,13 +466,30 @@ pub fn configure_window_rounding(
     }
 
     // Windows 10 desktop with DirectComposition enabled supports true per-pixel alpha transparency.
+    // Disable DWM non-client rendering so Windows 10 does not paint a white titlebar strip behind
+    // the top-left and top-right rounded corners when WM_NCCALCSIZE removes the native titlebar.
     if direct_composition_enabled {
+        disable_dwm_nc_rendering(hwnd);
         return crate::WindowRoundStyle::TransparentSurface;
     }
 
     // Windows 10 / Windows Server / VDI with DirectComposition disabled uses an opaque flip-model
     // swapchain (`DXGI_ALPHA_MODE_IGNORE`) that ignores `SetWindowRgn`; render flush square edges.
     crate::WindowRoundStyle::SquareOpaque
+}
+
+/// Disable Windows DWM non-client frame/titlebar rendering for custom transparent DirectComposition
+/// windows so the ~30px white Windows 10 caption strip never shows through transparent top corners.
+fn disable_dwm_nc_rendering(hwnd: HWND) {
+    let policy = DWMNCRP_DISABLED;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY,
+            &policy as *const _ as *const std::ffi::c_void,
+            size_of::<DWMNCRENDERINGPOLICY>() as u32,
+        );
+    }
 }
 
 static VEH_LOGGED: AtomicBool = AtomicBool::new(false);

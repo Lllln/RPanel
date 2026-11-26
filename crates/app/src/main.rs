@@ -471,6 +471,7 @@ fn open_rounded_window<V: Render>(
     build: impl FnOnce(WindowRoundStyle, &mut Window, &mut App) -> Entity<V>,
 ) -> Result<(AnyWindowHandle, Entity<V>)> {
     let mut built = None;
+    let initial_bg = options.window_background;
     let window = cx.open_window(options, |window, cx| {
         let round_style = configure_os_window_rounding(window, is_popup);
         let appearance = match round_style {
@@ -479,7 +480,11 @@ fn open_rounded_window<V: Render>(
                 WindowBackgroundAppearance::Opaque
             }
         };
-        window.set_background_appearance(appearance);
+        if appearance != initial_bg {
+            window.set_background_appearance(appearance);
+            // Re-assert DWM attributes (such as DWMNCRP_DISABLED) after updating composition attributes.
+            let _ = configure_os_window_rounding(window, is_popup);
+        }
         info!(
             ?round_style,
             is_popup,
