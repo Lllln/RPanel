@@ -307,7 +307,10 @@ fn tokenize_and_fold(src: &str, tokens: &mut Vec<Token>, folds: &mut Vec<FoldRan
         }
     }
 
-    folds.sort_by_key(|f| (f.start_line, f.end_line));
+    // Keep a single outermost fold candidate per `start_line` so lines like `[{` do not create
+    // duplicate start lines for `EditorState::fold_at_level`.
+    folds.sort_by_key(|f| (f.start_line, std::cmp::Reverse(f.end_line)));
+    folds.dedup_by_key(|f| f.start_line);
 }
 
 fn is_word_boundary(bytes: &[u8], idx: usize) -> bool {
@@ -355,5 +358,16 @@ mod tests {
         assert!(!runs.is_empty());
         assert_eq!(runs.first().unwrap().0.start, 0);
         assert_eq!(runs.last().unwrap().0.end, broken.len());
+    }
+
+    #[test]
+    fn deduplicates_multiple_open_brackets_on_the_same_line() {
+        let src = "[{\n  \"id\": 1\n},\n{\n  \"id\": 2\n}]";
+        let mut hl = JsonHighlighter::default();
+        hl.reparse(src);
+        assert_eq!(
+            hl.folds,
+            vec![FoldRange::new(0, 5), FoldRange::new(3, 5)]
+        );
     }
 }

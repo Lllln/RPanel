@@ -14,6 +14,10 @@ const PIN_FILLED_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width=
 
 const CLOSE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#;
 
+const FOLD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 20 5-5 5 5"/><path d="m7 4 5 5 5-5"/></svg>"#;
+
+const UNFOLD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>"#;
+
 pub type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 pub struct ToolbarCallbacks {
@@ -22,6 +26,7 @@ pub struct ToolbarCallbacks {
     pub on_escape: ClickHandler,
     pub on_unescape: ClickHandler,
     pub on_reload: ClickHandler,
+    pub on_toggle_fold: ClickHandler,
     pub on_copy_hide: ClickHandler,
     pub on_toggle_pin: ClickHandler,
     pub on_close: ClickHandler,
@@ -43,6 +48,7 @@ fn source_format_label(format: SourceFormat) -> &'static str {
 pub fn render_toolbar(
     source_format: SourceFormat,
     info_feedback: Option<&str>,
+    folded: bool,
     pinned: bool,
     top_corner_radius: Pixels,
     callbacks: ToolbarCallbacks,
@@ -73,9 +79,14 @@ pub fn render_toolbar(
         .active(rgb(palette::ACCENT_BORDER).into());
 
     #[cfg(target_os = "macos")]
-    let (tip_pretty, tip_minify, tip_copy, tip_pin) = (
+    let (tip_pretty, tip_minify, tip_fold, tip_copy, tip_pin) = (
         "格式化 JSON (⌘E)",
         "压缩为单行 JSON (⌘M)",
+        if folded {
+            "全部展开 (⌘⌥])"
+        } else {
+            "折叠节点 (⌘⌥[)"
+        },
         if pinned {
             "复制 JSON (⌘↵ · 面板已固定)"
         } else {
@@ -88,9 +99,14 @@ pub fn render_toolbar(
         },
     );
     #[cfg(not(target_os = "macos"))]
-    let (tip_pretty, tip_minify, tip_copy, tip_pin) = (
+    let (tip_pretty, tip_minify, tip_fold, tip_copy, tip_pin) = (
         "格式化 JSON (Ctrl+E)",
         "压缩为单行 JSON (Ctrl+M)",
+        if folded {
+            "全部展开 (Ctrl+Shift+])"
+        } else {
+            "折叠节点 (Ctrl+Shift+[)"
+        },
         if pinned {
             "复制 JSON (Ctrl+Enter · 面板已固定)"
         } else {
@@ -102,6 +118,18 @@ pub fn render_toolbar(
             "固定面板，防止误触关闭并支持多开对比 (Ctrl+P)"
         },
     );
+
+    let fold_button = Button::new("btn-fold")
+        .custom(if folded {
+            apple_pinned
+        } else {
+            apple_icon_subtle
+        })
+        .xsmall()
+        .icon(Icon::empty().data(if folded { UNFOLD_SVG } else { FOLD_SVG }))
+        .accessibility_label(if folded { "全部展开" } else { "折叠节点" })
+        .tooltip(tip_fold)
+        .on_click(callbacks.on_toggle_fold);
 
     let pin_icon = Icon::empty().data(if pinned {
         PIN_FILLED_SVG
@@ -234,6 +262,7 @@ pub fn render_toolbar(
                         .tooltip("从剪贴板重新读取并智能转换")
                         .on_click(callbacks.on_reload),
                 )
+                .child(fold_button)
                 .child(
                     div()
                         .w(px(1.0))

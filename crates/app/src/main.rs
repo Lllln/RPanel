@@ -156,6 +156,7 @@ fn main() {
     };
 
     gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx| {
             gpui_kit::init(cx);

@@ -32,6 +32,8 @@ actions!(
         FormatMinifyAction,
         TogglePinAction,
         NewPanelAction,
+        FoldAction,
+        UnfoldAllAction,
     ]
 );
 
@@ -59,6 +61,14 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-n", NewPanelAction, Some("RPanel")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-n", NewPanelAction, Some("RPanel")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-alt-[", FoldAction, Some("RPanel")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-[", FoldAction, Some("RPanel")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-alt-]", UnfoldAllAction, Some("RPanel")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-]", UnfoldAllAction, Some("RPanel")),
     ]);
 }
 
@@ -136,6 +146,7 @@ pub struct FloatingPanel {
     current_text_cache: String,
     last_applied_text: Option<String>,
     rounded: bool,
+    folded_summary: bool,
     opened_at: Instant,
     ever_activated: bool,
     pinned: Arc<AtomicBool>,
@@ -223,6 +234,7 @@ impl FloatingPanel {
             current_text_cache: initial_text,
             last_applied_text: None,
             rounded,
+            folded_summary: false,
             opened_at: Instant::now(),
             ever_activated,
             pinned,
@@ -317,12 +329,52 @@ impl FloatingPanel {
         self.doc.feedback = Some(PanelFeedback::info(feedback));
         self.current_text_cache = new_text.clone();
         self.last_applied_text = Some(new_text.clone());
+        self.folded_summary = false;
         let validation = self.doc.validation.clone();
         self.editor.update(cx, |state, cx| {
             state.replace_all(new_text, window, cx);
             sync_validation_diagnostics(state, &validation, cx);
         });
         cx.notify();
+    }
+
+    fn fold_nodes(&mut self, cx: &mut Context<Self>) {
+        let mut did_fold = false;
+        self.editor.update(cx, |state, cx| {
+            let candidates = state.fold_candidates();
+            if candidates.is_empty() {
+                return;
+            }
+            // Prefer folding level-2 child objects/arrays so the root `{` stays visible;
+            // fall back to folding level 1 for flat JSON objects.
+            let has_nested = has_nested_fold_candidates(candidates);
+            if has_nested {
+                state.fold_at_level(2, cx);
+            } else {
+                state.fold_all(cx);
+            }
+            did_fold = true;
+        });
+        if did_fold {
+            self.folded_summary = true;
+            cx.notify();
+        }
+    }
+
+    fn unfold_all_nodes(&mut self, cx: &mut Context<Self>) {
+        self.editor.update(cx, |state, cx| {
+            state.unfold_all(cx);
+        });
+        self.folded_summary = false;
+        cx.notify();
+    }
+
+    fn toggle_fold(&mut self, cx: &mut Context<Self>) {
+        if self.folded_summary {
+            self.unfold_all_nodes(cx);
+        } else {
+            self.fold_nodes(cx);
+        }
     }
 
     fn set_error_feedback(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
@@ -431,11 +483,26 @@ impl FloatingPanel {
             let col = err.column.saturating_sub(1) as u32;
             let pos = Position::new(line, col);
             self.editor.update(cx, |state, cx| {
+                state.unfold_at(pos, cx);
                 state.set_cursor_position(pos, window, cx);
                 state.focus(window, cx);
             });
         }
     }
+}
+
+fn has_nested_fold_candidates(candidates: &[gpui_kit::component::input::FoldRange]) -> bool {
+    let mut open_ends: Vec<usize> = Vec::new();
+    for candidate in candidates {
+        while open_ends.last().is_some_and(|&end| end < candidate.end_line) {
+            open_ends.pop();
+        }
+        if !open_ends.is_empty() {
+            return true;
+        }
+        open_ends.push(candidate.end_line);
+    }
+    false
 }
 
 impl Drop for FloatingPanel {
@@ -463,6 +530,7 @@ impl Render for FloatingPanel {
             on_reload: Box::new(
                 cx.listener(|this, _, window, cx| this.reload_from_clipboard(window, cx)),
             ),
+            on_toggle_fold: Box::new(cx.listener(|this, _, _, cx| this.toggle_fold(cx))),
             on_copy_hide: Box::new(
                 cx.listener(|this, _, window, cx| this.copy_and_hide(window, cx)),
             ),
@@ -494,6 +562,12 @@ impl Render for FloatingPanel {
             }))
             .on_action(cx.listener(|this, _: &NewPanelAction, _, cx| {
                 this.open_new_panel(cx);
+            }))
+            .on_action(cx.listener(|this, _: &FoldAction, _, cx| {
+                this.fold_nodes(cx);
+            }))
+            .on_action(cx.listener(|this, _: &UnfoldAllAction, _, cx| {
+                this.unfold_all_nodes(cx);
             }))
             .flex()
             .flex_col()
@@ -678,6 +752,7 @@ impl Render for FloatingPanel {
             .child(render_toolbar(
                 self.doc.source_format,
                 info_feedback,
+                self.folded_summary,
                 pinned,
                 inner_radius,
                 callbacks,
