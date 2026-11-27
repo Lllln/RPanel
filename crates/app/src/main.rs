@@ -445,6 +445,36 @@ fn handle_tray_command(cmd: TrayCommand, cx: &mut App) -> bool {
     }
 }
 
+fn resolve_quick_menu_payload(
+    explicit_selection: Option<String>,
+    cx: &App,
+) -> (Option<String>, bool) {
+    let draft_store = Arc::clone(&cx.global::<AppRuntime>().draft_store);
+    let current_seq = input_hook::clipboard_sequence_number();
+    resolve_quick_menu_payload_inner(
+        explicit_selection,
+        &draft_store,
+        current_seq,
+        || input_hook::clipboard::read_clipboard_text().ok(),
+    )
+}
+
+fn resolve_quick_menu_payload_inner(
+    explicit_selection: Option<String>,
+    draft_store: &SharedDraftStore,
+    current_clipboard_seq: Option<u64>,
+    read_clipboard: impl FnOnce() -> Option<String>,
+) -> (Option<String>, bool) {
+    if let Some(sel) = explicit_selection.filter(|s| !s.trim().is_empty()) {
+        return (Some(sel), true);
+    }
+    if let Some(draft) = matching_draft_snapshot(draft_store, current_clipboard_seq) {
+        return (Some(draft.text), false);
+    }
+    let clip = read_clipboard().filter(|s| !s.trim().is_empty());
+    (clip, false)
+}
+
 fn handle_global_hotkey(event: GlobalHotkeyEvent, cx: &mut App) {
     // Toggle behavior: if the compact quick menu is already open, dismiss it immediately.
     let existing_menu = cx.global_mut::<AppRuntime>().active_menu.take();
@@ -462,20 +492,8 @@ fn handle_global_hotkey(event: GlobalHotkeyEvent, cx: &mut App) {
     }
 
     // Prefer silent non-intrusive selection (macOS AX), then matching saved draft, then clipboard.
-    let (text, is_explicit) = if let Some(sel) = input_hook::try_capture_selection_non_intrusive() {
-        (Some(sel), true)
-    } else {
-        let draft_store = Arc::clone(&cx.global::<AppRuntime>().draft_store);
-        let current_seq = input_hook::clipboard_sequence_number();
-        if let Some(draft) = matching_draft_snapshot(&draft_store, current_seq) {
-            (Some(draft.text), false)
-        } else {
-            let clip = input_hook::clipboard::read_clipboard_text()
-                .ok()
-                .filter(|s| !s.trim().is_empty());
-            (clip, false)
-        }
-    };
+    let (text, is_explicit) =
+        resolve_quick_menu_payload(input_hook::try_capture_selection_non_intrusive(), cx);
 
     info!(
         has_text = text.is_some(),
@@ -488,16 +506,16 @@ fn handle_global_hotkey(event: GlobalHotkeyEvent, cx: &mut App) {
 fn handle_hook_event(event: HookEvent, cx: &mut App) {
     match event {
         HookEvent::LongPressTriggered { position, captured } => {
-            // Keep only genuine captured selection; clicking "查看 JSON" opens the editor
-            // with this selection auto-converted (or restores an unchanged draft if nothing was selected).
-            let selected = captured.text.filter(|s| !s.trim().is_empty());
-            let is_explicit = selected.is_some();
+            // Prefer newly selected text; when right-clicking blank space with no selection,
+            // fall back consistently to unchanged saved draft -> latest clipboard text.
+            let (text, is_explicit) = resolve_quick_menu_payload(captured.text, cx);
             info!(
                 source = ?captured.source,
-                captured_chars = selected.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+                is_explicit,
+                payload_chars = text.as_ref().map(|s| s.chars().count()).unwrap_or(0),
                 "long-press triggered"
             );
-            open_quick_menu(Some(position), selected, is_explicit, cx);
+            open_quick_menu(Some(position), text, is_explicit, cx);
         }
         HookEvent::GlobalMouseDown { position, at } => {
             handle_global_mouse_down(position, at, cx);
@@ -885,5 +903,40 @@ mod tests {
             PanelInitContent::Raw(Some(text)) => assert_eq!(text, r#"{"selected": 99}"#),
             other => panic!("expected Raw(Some), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn quick_menu_payload_falls_back_from_selection_to_draft_then_clipboard() {
+        let store: SharedDraftStore = Arc::new(Mutex::new(Some(PanelDraftSnapshot {
+            text: r#"{"draft": 1}"#.to_string(),
+            source_format: SourceFormat::Json,
+            clipboard_seq: Some(10),
+        })));
+
+        // Explicit selection wins over draft and clipboard.
+        let (text, is_explicit) = resolve_quick_menu_payload_inner(
+            Some("1700000000".to_string()),
+            &store,
+            Some(10),
+            || Some("clipboard".to_string()),
+        );
+        assert_eq!(text.as_deref(), Some("1700000000"));
+        assert!(is_explicit);
+
+        // No selection + unchanged clipboard restores matching draft.
+        let (text, is_explicit) =
+            resolve_quick_menu_payload_inner(None, &store, Some(10), || {
+                Some("clipboard".to_string())
+            });
+        assert_eq!(text.as_deref(), Some(r#"{"draft": 1}"#));
+        assert!(!is_explicit);
+
+        // No selection + changed clipboard falls back to latest clipboard text.
+        let (text, is_explicit) =
+            resolve_quick_menu_payload_inner(None, &store, Some(11), || {
+                Some("1700000000".to_string())
+            });
+        assert_eq!(text.as_deref(), Some("1700000000"));
+        assert!(!is_explicit);
     }
 }
