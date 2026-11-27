@@ -32,7 +32,7 @@ impl TrayController {
         command_tx: Sender<TrayCommand>,
     ) -> Result<Self, String> {
         let open_item = MenuItem::new("打开 JSON 编辑器（剪贴板）", true, None);
-        let enabled_item = CheckMenuItem::new("启用右键长按拦截", true, true, None);
+        let enabled_item = CheckMenuItem::new("启用右键长按唤出", true, true, None);
         #[cfg(target_os = "macos")]
         let hotkey_label = "启用全局快捷键 (⌃⌥Space)";
         #[cfg(not(target_os = "macos"))]
