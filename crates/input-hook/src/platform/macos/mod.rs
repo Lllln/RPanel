@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use core_foundation::base::TCFType;
 use core_foundation::mach_port::CFMachPortRef;
@@ -20,6 +20,7 @@ use core_graphics::geometry::CGPoint;
 use crossbeam_channel::{Sender, unbounded};
 use tracing::{debug, error, info, warn};
 
+use crate::clipboard::{AutoCopyBaseline, CopyShortcutStep};
 use crate::state_machine::{LongPressStateMachine, StateAction};
 use crate::worker::{PlatformActions, WorkerCommand, capture_or_none, spawn_worker};
 use crate::{
@@ -40,6 +41,7 @@ impl PlatformActions for MacActions {
             warn!("failed to replay macOS right-down: {err}");
             return;
         }
+        thread::sleep(Duration::from_millis(5));
         if let Err(err) = post_right_mouse_event(CGEventType::RightMouseUp, up_at) {
             warn!("failed to replay macOS right-up: {err}");
         }
@@ -50,13 +52,31 @@ impl PlatformActions for MacActions {
             warn!("failed to replay macOS right-drag-start down: {err}");
             return;
         }
+        thread::sleep(Duration::from_millis(5));
         if let Err(err) = post_right_mouse_event(CGEventType::RightMouseDragged, current) {
             warn!("failed to replay macOS right-drag-start move: {err}");
         }
     }
 
+    fn replay_drag_end(&self, up_at: ScreenPoint) {
+        if let Err(err) = post_right_mouse_event(CGEventType::RightMouseUp, up_at) {
+            warn!("failed to replay macOS right-drag-end up: {err}");
+        }
+    }
+
     fn capture_selection(&self) -> CaptureResult {
-        capture_or_none(capture_selection())
+        capture_or_none(capture_selection_with_baseline(None))
+    }
+
+    fn clipboard_sequence_number(&self) -> Option<u64> {
+        clipboard_sequence_number()
+    }
+
+    fn capture_selection_with_baseline(
+        &self,
+        auto_copy_baseline: Option<AutoCopyBaseline>,
+    ) -> CaptureResult {
+        capture_or_none(capture_selection_with_baseline(auto_copy_baseline))
     }
 }
 
@@ -227,6 +247,10 @@ fn handle_cg_event(
     let pos = ScreenPoint::new(loc.x.round() as i32, loc.y.round() as i32);
     let now = Instant::now();
 
+    if matches!(event_type, CGEventType::LeftMouseDown) {
+        let _ = cmd_tx.send(WorkerCommand::LeftMouseDown { at: now });
+    }
+
     if matches!(
         event_type,
         CGEventType::LeftMouseDown | CGEventType::RightMouseDown | CGEventType::OtherMouseDown
@@ -250,6 +274,13 @@ fn handle_cg_event(
         if !control.is_enabled() && sm.is_idle() {
             return CallbackResult::Keep;
         }
+        // Pass through right-clicks in the macOS top menu bar (status/tray icons).
+        if matches!(event_type, CGEventType::RightMouseDown)
+            && sm.is_idle()
+            && is_in_macos_menu_bar(pos)
+        {
+            return CallbackResult::Keep;
+        }
         sm.set_hold_duration(control.hold_duration());
 
         match event_type {
@@ -261,6 +292,17 @@ fn handle_cg_event(
     };
 
     dispatch_action(action, now, cmd_tx)
+}
+
+/// Returns `true` when `pos` lies within the top status/menu bar strip of the primary display.
+fn is_in_macos_menu_bar(pos: ScreenPoint) -> bool {
+    let bounds = core_graphics::display::CGDisplay::main().bounds();
+    let px = f64::from(pos.x);
+    let py = f64::from(pos.y);
+    px >= bounds.origin.x
+        && px < bounds.origin.x + bounds.size.width
+        && py >= bounds.origin.y
+        && py < bounds.origin.y + 38.0
 }
 
 fn dispatch_action(
@@ -289,6 +331,10 @@ fn dispatch_action(
             let _ = cmd_tx.send(WorkerCommand::ReplayDragStart { down_at, current });
             CallbackResult::Drop
         }
+        StateAction::ReplayDragEnd { up_at } => {
+            let _ = cmd_tx.send(WorkerCommand::ReplayDragEnd { up_at });
+            CallbackResult::Drop
+        }
         StateAction::TriggerLongPress { position } => {
             let _ = cmd_tx.send(WorkerCommand::TriggerLongPress { position });
             CallbackResult::Drop
@@ -310,19 +356,95 @@ fn post_right_mouse_event(event_type: CGEventType, pos: ScreenPoint) -> Result<(
     Ok(())
 }
 
+/// Query the lock-free `NSPasteboard.generalPasteboard().changeCount` on macOS.
+pub fn clipboard_sequence_number() -> Option<u64> {
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let cls = objc2::runtime::AnyClass::get(c"NSPasteboard")?;
+        let pasteboard: *mut objc2::runtime::AnyObject = objc2::msg_send![cls, generalPasteboard];
+        if pasteboard.is_null() {
+            return None;
+        }
+        let count: isize = objc2::msg_send![pasteboard, changeCount];
+        Some(count as u64)
+    })
+}
+
+/// Detect whether the frontmost macOS application is a known terminal emulator / SSH client.
+fn is_foreground_terminal() -> bool {
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let Some(cls) = objc2::runtime::AnyClass::get(c"NSWorkspace") else {
+            return false;
+        };
+        let workspace: *mut objc2::runtime::AnyObject = objc2::msg_send![cls, sharedWorkspace];
+        if workspace.is_null() {
+            return false;
+        }
+        let app: *mut objc2::runtime::AnyObject =
+            objc2::msg_send![workspace, frontmostApplication];
+        if app.is_null() {
+            return false;
+        }
+
+        let bundle_id: *mut objc2_foundation::NSString = objc2::msg_send![app, bundleIdentifier];
+        if !bundle_id.is_null()
+            && crate::platform::is_known_terminal_identifier(&(*bundle_id).to_string())
+        {
+            return true;
+        }
+
+        let name: *mut objc2_foundation::NSString = objc2::msg_send![app, localizedName];
+        !name.is_null() && crate::platform::is_known_terminal_identifier(&(*name).to_string())
+    })
+}
+
 /// Capture currently selected text on macOS:
 /// 1. Try silent `AXUIElement` direct selection reading.
-/// 2. Fall back to clipboard backup + tagged `Cmd+C` + restore.
-pub fn capture_selection() -> Result<CaptureResult, HookError> {
+/// 2. Fall back to isolated `Cmd+C` (and for terminal/SSH apps like WindTerm, also `Cmd+Shift+C`
+///    and `Ctrl+Shift+C`) using lock-free `NSPasteboard.changeCount` polling.
+/// 3. Finally fall back to recent auto-copy-on-select when a terminal already copied on mouse-up.
+pub fn capture_selection_with_baseline(
+    auto_copy_baseline: Option<AutoCopyBaseline>,
+) -> Result<CaptureResult, HookError> {
     if let Some(ax_result) = ax_selection::try_read_selected_text() {
         debug!("captured macOS selection via AXUIElement");
         return Ok(ax_result);
     }
 
-    match clipboard::capture_via_clipboard_shortcut(keyboard::send_cmd_c) {
+    let is_terminal = is_foreground_terminal();
+    debug!(is_terminal, "macOS AX selection unavailable; falling back to keyboard copy");
+
+    let result = if is_terminal {
+        let steps = [
+            CopyShortcutStep {
+                label: "cmd+c",
+                timeout: Duration::from_millis(220),
+                trigger: &keyboard::send_cmd_c,
+            },
+            CopyShortcutStep {
+                label: "cmd+shift+c",
+                timeout: Duration::from_millis(160),
+                trigger: &keyboard::send_cmd_shift_c,
+            },
+            CopyShortcutStep {
+                label: "ctrl+shift+c",
+                timeout: Duration::from_millis(160),
+                trigger: &keyboard::send_ctrl_shift_c,
+            },
+        ];
+        clipboard::capture_via_shortcuts(&steps, auto_copy_baseline)
+    } else {
+        let steps = [CopyShortcutStep {
+            label: "cmd+c",
+            timeout: Duration::from_millis(260),
+            trigger: &keyboard::send_cmd_c,
+        }];
+        clipboard::capture_via_shortcuts(&steps, auto_copy_baseline)
+    };
+
+    match result {
         Ok(res) => Ok(res),
         Err(err) => {
-            error!("macOS Cmd+C clipboard capture failed: {err}");
+            error!("macOS keyboard clipboard capture failed: {err}");
             Err(err)
         }
     }

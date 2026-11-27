@@ -5,10 +5,10 @@ use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Sender, unbounded};
 use tracing::{debug, error, info, warn};
@@ -22,25 +22,32 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
+use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+use windows::Win32::System::DataExchange::GetClipboardSequenceNumber;
 use windows::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, EXCEPTION_CONTINUE_SEARCH, EXCEPTION_POINTERS,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
-use windows::core::HSTRING;
+use windows::Win32::System::Threading::{
+    CreateMutexW, GetCurrentProcess, GetCurrentThreadId, OpenProcess, OpenProcessToken,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
+use windows::core::{HSTRING, PWSTR};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, GetSystemMetrics, GetWindowRect, HC_ACTION, MSG,
-    MSLLHOOKSTRUCT, PostThreadMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_REMOTESESSION,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_XBUTTONDOWN,
+    CallNextHookEx, DispatchMessageW, GA_ROOT, GetAncestor, GetClassNameW, GetForegroundWindow,
+    GetMessageW, GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, HC_ACTION,
+    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_REMOTESESSION, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_XBUTTONDOWN, WindowFromPoint,
 };
 
+use crate::clipboard::{AutoCopyBaseline, CopyShortcutStep};
 use crate::state_machine::{LongPressStateMachine, StateAction};
 use crate::worker::{PlatformActions, WorkerCommand, capture_or_none, spawn_worker};
 use crate::{
@@ -58,48 +65,48 @@ thread_local! {
     static HOOK_CTX: RefCell<Option<WinHookContext>> = const { RefCell::new(None) };
 }
 
+static PENDING_SYNTHETIC_RDOWN: AtomicUsize = AtomicUsize::new(0);
+static PENDING_SYNTHETIC_RUP: AtomicUsize = AtomicUsize::new(0);
+static SELF_ELEVATED: OnceLock<bool> = OnceLock::new();
+
 struct WinActions;
 
 impl PlatformActions for WinActions {
-    fn replay_short_click(&self, down_at: ScreenPoint, up_at: ScreenPoint) {
-        let inputs = [
-            mouse_input(
-                down_at,
-                MOUSEEVENTF_MOVE
-                    | MOUSEEVENTF_ABSOLUTE
-                    | MOUSEEVENTF_VIRTUALDESK
-                    | MOUSEEVENTF_RIGHTDOWN,
-            ),
-            mouse_input(
-                up_at,
-                MOUSEEVENTF_MOVE
-                    | MOUSEEVENTF_ABSOLUTE
-                    | MOUSEEVENTF_VIRTUALDESK
-                    | MOUSEEVENTF_RIGHTUP,
-            ),
-        ];
-        send_mouse_inputs(&inputs, "short click");
+    fn replay_short_click(&self, _down_at: ScreenPoint, _up_at: ScreenPoint) {
+        // Click directly at the current pointer location without `MOUSEEVENTF_MOVE` quantization
+        // jitter, and leave a brief beat between down and up so Win32/Shell menus process cleanly.
+        send_synthetic_right_button(MOUSEEVENTF_RIGHTDOWN, None, "short click down");
+        thread::sleep(Duration::from_millis(10));
+        send_synthetic_right_button(MOUSEEVENTF_RIGHTUP, None, "short click up");
     }
 
     fn replay_drag_start(&self, down_at: ScreenPoint, current: ScreenPoint) {
-        let inputs = [
-            mouse_input(
-                down_at,
-                MOUSEEVENTF_MOVE
-                    | MOUSEEVENTF_ABSOLUTE
-                    | MOUSEEVENTF_VIRTUALDESK
-                    | MOUSEEVENTF_RIGHTDOWN,
-            ),
-            mouse_input(
-                current,
-                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-            ),
-        ];
-        send_mouse_inputs(&inputs, "drag start");
+        send_synthetic_right_button(MOUSEEVENTF_RIGHTDOWN, Some(down_at), "drag start down");
+        thread::sleep(Duration::from_millis(5));
+        let move_only = [mouse_input(
+            current,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        )];
+        send_mouse_inputs(&move_only, "drag start move");
+    }
+
+    fn replay_drag_end(&self, _up_at: ScreenPoint) {
+        send_synthetic_right_button(MOUSEEVENTF_RIGHTUP, None, "drag end up");
     }
 
     fn capture_selection(&self) -> CaptureResult {
-        capture_or_none(capture_selection())
+        capture_or_none(capture_selection_with_baseline(None))
+    }
+
+    fn clipboard_sequence_number(&self) -> Option<u64> {
+        clipboard_sequence_number()
+    }
+
+    fn capture_selection_with_baseline(
+        &self,
+        auto_copy_baseline: Option<AutoCopyBaseline>,
+    ) -> CaptureResult {
+        capture_or_none(capture_selection_with_baseline(auto_copy_baseline))
     }
 }
 
@@ -235,12 +242,27 @@ unsafe extern "system" fn low_level_mouse_proc(
     // SAFETY: When code == HC_ACTION, lparam points to a valid MSLLHOOKSTRUCT.
     let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
 
-    // Prevent hook recursion on synthetic events injected by RPanel.
+    let msg_id = wparam.0 as u32;
+
+    // Prevent hook recursion on synthetic events injected by RPanel (check both `dwExtraInfo`
+    // and our fallback pending-injected counters in case a driver/RDP filter strips extra info).
     if info.dwExtraInfo == RPANEL_INJECTED_TAG as usize {
+        if msg_id == WM_RBUTTONDOWN {
+            decrement_saturated(&PENDING_SYNTHETIC_RDOWN);
+        } else if msg_id == WM_RBUTTONUP {
+            decrement_saturated(&PENDING_SYNTHETIC_RUP);
+        }
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
+    if (info.flags & LLMHF_INJECTED) != 0 {
+        if msg_id == WM_RBUTTONDOWN && try_consume_pending(&PENDING_SYNTHETIC_RDOWN) {
+            return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+        }
+        if msg_id == WM_RBUTTONUP && try_consume_pending(&PENDING_SYNTHETIC_RUP) {
+            return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+        }
+    }
 
-    let msg_id = wparam.0 as u32;
     let is_mouse_down = matches!(
         msg_id,
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
@@ -258,6 +280,10 @@ unsafe extern "system" fn low_level_mouse_proc(
             return false;
         };
 
+        if msg_id == WM_LBUTTONDOWN {
+            let _ = ctx.cmd_tx.send(WorkerCommand::LeftMouseDown { at: now });
+        }
+
         if is_mouse_down && ctx.control.is_dismiss_watch_active() {
             let _ = ctx.cmd_tx.send(WorkerCommand::GlobalMouseDown {
                 position: pos,
@@ -272,6 +298,9 @@ unsafe extern "system" fn low_level_mouse_proc(
         let action = {
             let mut sm = ctx.state.lock().unwrap_or_else(|e| e.into_inner());
             if !ctx.control.is_enabled() && sm.is_idle() {
+                return false;
+            }
+            if msg_id == WM_RBUTTONDOWN && sm.is_idle() && should_bypass_right_click(pos) {
                 return false;
             }
             sm.set_hold_duration(ctx.control.hold_duration());
@@ -320,10 +349,173 @@ fn dispatch_win_action(
             let _ = cmd_tx.send(WorkerCommand::ReplayDragStart { down_at, current });
             true
         }
+        StateAction::ReplayDragEnd { up_at } => {
+            let _ = cmd_tx.send(WorkerCommand::ReplayDragEnd { up_at });
+            true
+        }
         StateAction::TriggerLongPress { position } => {
             let _ = cmd_tx.send(WorkerCommand::TriggerLongPress { position });
             true
         }
+    }
+}
+
+fn mouse_button_only_input(flags: MOUSE_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: RPANEL_INJECTED_TAG as usize,
+            },
+        },
+    }
+}
+
+fn send_synthetic_right_button(
+    button_flag: MOUSE_EVENT_FLAGS,
+    move_to: Option<ScreenPoint>,
+    label: &str,
+) {
+    let counter = if button_flag == MOUSEEVENTF_RIGHTDOWN {
+        &PENDING_SYNTHETIC_RDOWN
+    } else {
+        &PENDING_SYNTHETIC_RUP
+    };
+    counter.fetch_add(1, Ordering::AcqRel);
+
+    let input = match move_to {
+        Some(point) => mouse_input(
+            point,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | button_flag,
+        ),
+        None => mouse_button_only_input(button_flag),
+    };
+
+    let sent = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
+    if sent != 1 {
+        decrement_saturated(counter);
+        warn!(
+            sent,
+            expected = 1,
+            "SendInput incomplete for {label} (target window may be elevated)"
+        );
+    }
+}
+
+fn decrement_saturated(counter: &AtomicUsize) {
+    let _ = try_consume_pending(counter);
+}
+
+fn try_consume_pending(counter: &AtomicUsize) -> bool {
+    let mut current = counter.load(Ordering::Acquire);
+    while current > 0 {
+        match counter.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(next) => current = next,
+        }
+    }
+    false
+}
+
+fn is_self_elevated() -> bool {
+    *SELF_ELEVATED.get_or_init(|| unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut ret_len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut _ as *mut std::ffi::c_void),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok && elevation.TokenIsElevated != 0
+    })
+}
+
+fn is_process_elevated_or_protected(pid: u32) -> bool {
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            // Access denied from a standard user process usually indicates SYSTEM / PPL / elevated.
+            return true;
+        };
+        let mut token = HANDLE::default();
+        let token_res = OpenProcessToken(process, TOKEN_QUERY, &mut token);
+        let _ = CloseHandle(process);
+        if token_res.is_err() {
+            return true;
+        }
+
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut ret_len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut _ as *mut std::ffi::c_void),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok && elevation.TokenIsElevated != 0
+    }
+}
+
+/// Bypass global right-click interception when clicking on Windows taskbar/system tray icons,
+/// tray overflow popups, active context menus, or elevated windows (which block `SendInput`
+/// via UIPI when RPanel is running non-elevated).
+fn should_bypass_right_click(pos: ScreenPoint) -> bool {
+    unsafe {
+        let hwnd = WindowFromPoint(POINT { x: pos.x, y: pos.y });
+        if hwnd.0.is_null() {
+            return false;
+        }
+
+        let mut class_buf = [0u16; 128];
+        let len = GetClassNameW(hwnd, &mut class_buf);
+        if len > 0 {
+            let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
+            if crate::platform::is_bypass_right_click_window_class(&class_name) {
+                return true;
+            }
+        }
+
+        let root = GetAncestor(hwnd, GA_ROOT);
+        let inspect_hwnd = if !root.0.is_null() { root } else { hwnd };
+        if inspect_hwnd != hwnd {
+            let root_len = GetClassNameW(inspect_hwnd, &mut class_buf);
+            if root_len > 0 {
+                let root_class = String::from_utf16_lossy(&class_buf[..root_len as usize]);
+                if crate::platform::is_bypass_right_click_window_class(&root_class) {
+                    return true;
+                }
+            }
+        }
+
+        if !is_self_elevated() {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(inspect_hwnd, Some(&mut pid));
+            if pid != 0 && pid != std::process::id() && is_process_elevated_or_protected(pid) {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -375,12 +567,111 @@ fn send_mouse_inputs(inputs: &[INPUT], label: &str) {
     }
 }
 
-/// Capture currently selected text on Windows via clipboard backup + tagged `Ctrl+C` + restore.
-pub fn capture_selection() -> Result<CaptureResult, HookError> {
-    match clipboard::capture_via_clipboard_shortcut(keyboard::send_ctrl_c) {
+/// Query the Win32 lock-free clipboard change counter (`GetClipboardSequenceNumber`).
+pub fn clipboard_sequence_number() -> Option<u64> {
+    // SAFETY: `GetClipboardSequenceNumber` is thread-safe and does not lock the clipboard.
+    Some(u64::from(unsafe { GetClipboardSequenceNumber() }))
+}
+
+/// Inspect the foreground Win32 window's class name and executable image name to determine
+/// whether it is a terminal emulator / SSH shell (e.g. WindTerm, Windows Terminal, PuTTY,
+/// Xshell, MobaXterm, PowerShell, cmd, mintty, Tabby, etc.).
+fn is_foreground_terminal() -> bool {
+    // SAFETY: Win32 foreground window, class name, and limited process-image queries.
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+
+        let mut class_buf = [0u16; 128];
+        let class_len = GetClassNameW(hwnd, &mut class_buf);
+        if class_len > 0 {
+            let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+            if crate::platform::is_known_terminal_window_class(&class_name) {
+                debug!(%class_name, "detected foreground Windows terminal by window class");
+                return true;
+            }
+        }
+
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return false;
+        }
+
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+
+        let mut path_buf = [0u16; 512];
+        let mut path_len = path_buf.len() as u32;
+        let query_ok = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR::from_raw(path_buf.as_mut_ptr()),
+            &mut path_len,
+        )
+        .is_ok();
+        let _ = CloseHandle(process);
+
+        if query_ok && path_len > 0 {
+            let image_path = String::from_utf16_lossy(&path_buf[..path_len as usize]);
+            let is_term = crate::platform::is_known_terminal_identifier(&image_path);
+            debug!(%image_path, is_term, "inspected foreground Windows process");
+            return is_term;
+        }
+
+        false
+    }
+}
+
+/// Capture currently selected text on Windows using lock-free clipboard sequence polling:
+/// - In terminal/shell windows (WindTerm, Windows Terminal, PuTTY, Xshell, MobaXterm, cmd,
+///   PowerShell, mintty, etc.), sends `Ctrl+Shift+C` then `Ctrl+Insert` (NEVER `Ctrl+C`,
+///   avoiding accidental `SIGINT`), and falls back to recent auto-copy-on-select.
+/// - In standard apps, sends `Ctrl+C` (with hardware scan codes and modifier hygiene), then
+///   safe `Ctrl+Insert` fallback (for IDE integrated terminals & legacy controls), then recent
+///   auto-copy-on-select.
+pub fn capture_selection_with_baseline(
+    auto_copy_baseline: Option<AutoCopyBaseline>,
+) -> Result<CaptureResult, HookError> {
+    let is_terminal = is_foreground_terminal();
+
+    let result = if is_terminal {
+        let steps = [
+            CopyShortcutStep {
+                label: "ctrl+shift+c",
+                timeout: Duration::from_millis(220),
+                trigger: &keyboard::send_ctrl_shift_c,
+            },
+            CopyShortcutStep {
+                label: "ctrl+insert",
+                timeout: Duration::from_millis(180),
+                trigger: &keyboard::send_ctrl_insert,
+            },
+        ];
+        clipboard::capture_via_shortcuts(&steps, auto_copy_baseline)
+    } else {
+        let steps = [
+            CopyShortcutStep {
+                label: "ctrl+c",
+                timeout: Duration::from_millis(260),
+                trigger: &keyboard::send_ctrl_c,
+            },
+            CopyShortcutStep {
+                label: "ctrl+insert",
+                timeout: Duration::from_millis(160),
+                trigger: &keyboard::send_ctrl_insert,
+            },
+        ];
+        clipboard::capture_via_shortcuts(&steps, auto_copy_baseline)
+    };
+
+    match result {
         Ok(res) => Ok(res),
         Err(err) => {
-            error!("Windows Ctrl+C clipboard capture failed: {err}");
+            error!("Windows clipboard selection capture failed: {err}");
             Err(err)
         }
     }

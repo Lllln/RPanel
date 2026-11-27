@@ -5,6 +5,7 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use tracing::{debug, warn};
 
+use crate::clipboard::AutoCopyBaseline;
 use crate::state_machine::{LongPressStateMachine, StateAction};
 use crate::{CaptureResult, CaptureSource, HookEvent, ScreenPoint};
 
@@ -24,8 +25,14 @@ pub enum WorkerCommand {
         down_at: ScreenPoint,
         current: ScreenPoint,
     },
+    ReplayDragEnd {
+        up_at: ScreenPoint,
+    },
     TriggerLongPress {
         position: ScreenPoint,
+    },
+    LeftMouseDown {
+        at: Instant,
     },
     GlobalMouseDown {
         position: ScreenPoint,
@@ -38,7 +45,21 @@ pub enum WorkerCommand {
 pub trait PlatformActions: Send + 'static {
     fn replay_short_click(&self, down_at: ScreenPoint, up_at: ScreenPoint);
     fn replay_drag_start(&self, down_at: ScreenPoint, current: ScreenPoint);
+    fn replay_drag_end(&self, up_at: ScreenPoint);
     fn capture_selection(&self) -> CaptureResult;
+
+    /// Query the OS clipboard change counter for auto-copy-on-select tracking.
+    fn clipboard_sequence_number(&self) -> Option<u64> {
+        None
+    }
+
+    /// Capture selection with an optional pre-selection clipboard baseline recorded at `LeftMouseDown`.
+    fn capture_selection_with_baseline(
+        &self,
+        _auto_copy_baseline: Option<AutoCopyBaseline>,
+    ) -> CaptureResult {
+        self.capture_selection()
+    }
 }
 
 /// Spawn the dedicated worker thread handling hold timers, event replay, and selection capture.
@@ -64,6 +85,7 @@ fn worker_loop<A: PlatformActions>(
     actions: A,
 ) {
     let mut armed: Option<(u64, Instant)> = None;
+    let mut last_left_down: Option<AutoCopyBaseline> = None;
 
     loop {
         let msg = match armed {
@@ -76,7 +98,7 @@ fn worker_loop<A: PlatformActions>(
                         sm.on_timer_fired(generation, Instant::now())
                     };
                     if let Some(StateAction::TriggerLongPress { position }) = triggered {
-                        emit_long_press(position, &event_tx, &actions);
+                        emit_long_press(position, last_left_down, &event_tx, &actions);
                     }
                     continue;
                 }
@@ -108,9 +130,19 @@ fn worker_loop<A: PlatformActions>(
                 debug!(?down_at, ?current, "replaying native right drag start");
                 actions.replay_drag_start(down_at, current);
             }
+            WorkerCommand::ReplayDragEnd { up_at } => {
+                armed = None;
+                debug!(?up_at, "replaying native right drag end");
+                actions.replay_drag_end(up_at);
+            }
             WorkerCommand::TriggerLongPress { position } => {
                 armed = None;
-                emit_long_press(position, &event_tx, &actions);
+                emit_long_press(position, last_left_down, &event_tx, &actions);
+            }
+            WorkerCommand::LeftMouseDown { at } => {
+                if let Some(seq) = actions.clipboard_sequence_number() {
+                    last_left_down = Some(AutoCopyBaseline { seq, at });
+                }
             }
             WorkerCommand::GlobalMouseDown { position, at } => {
                 if let Err(err) = event_tx.send(HookEvent::GlobalMouseDown { position, at }) {
@@ -124,11 +156,12 @@ fn worker_loop<A: PlatformActions>(
 
 fn emit_long_press<A: PlatformActions>(
     position: ScreenPoint,
+    last_left_down: Option<AutoCopyBaseline>,
     event_tx: &Sender<HookEvent>,
     actions: &A,
 ) {
     debug!(?position, "right-button long-press triggered");
-    let captured = actions.capture_selection();
+    let captured = actions.capture_selection_with_baseline(last_left_down);
     if let Err(err) = event_tx.send(HookEvent::LongPressTriggered { position, captured }) {
         warn!("failed to deliver HookEvent to receiver: {err}");
     }
@@ -160,7 +193,9 @@ mod tests {
     struct MockActions {
         short_clicks: Arc<AtomicUsize>,
         drag_starts: Arc<AtomicUsize>,
+        drag_ends: Arc<AtomicUsize>,
         captures: Arc<AtomicUsize>,
+        order: Arc<Mutex<Vec<&'static str>>>,
     }
 
     impl MockActions {
@@ -168,7 +203,9 @@ mod tests {
             Self {
                 short_clicks: Arc::new(AtomicUsize::new(0)),
                 drag_starts: Arc::new(AtomicUsize::new(0)),
+                drag_ends: Arc::new(AtomicUsize::new(0)),
                 captures: Arc::new(AtomicUsize::new(0)),
+                order: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -176,10 +213,17 @@ mod tests {
     impl PlatformActions for MockActions {
         fn replay_short_click(&self, _down_at: ScreenPoint, _up_at: ScreenPoint) {
             self.short_clicks.fetch_add(1, Ordering::SeqCst);
+            self.order.lock().unwrap().push("short_click");
         }
 
         fn replay_drag_start(&self, _down_at: ScreenPoint, _current: ScreenPoint) {
             self.drag_starts.fetch_add(1, Ordering::SeqCst);
+            self.order.lock().unwrap().push("drag_start");
+        }
+
+        fn replay_drag_end(&self, _up_at: ScreenPoint) {
+            self.drag_ends.fetch_add(1, Ordering::SeqCst);
+            self.order.lock().unwrap().push("drag_end");
         }
 
         fn capture_selection(&self) -> CaptureResult {
@@ -288,9 +332,27 @@ mod tests {
             })
             .unwrap();
 
+        let up = state
+            .lock()
+            .unwrap()
+            .on_right_up(ScreenPoint::new(45, 10), Instant::now());
+        assert_eq!(
+            up,
+            StateAction::ReplayDragEnd {
+                up_at: ScreenPoint::new(45, 10),
+            }
+        );
+        cmd_tx
+            .send(WorkerCommand::ReplayDragEnd {
+                up_at: ScreenPoint::new(45, 10),
+            })
+            .unwrap();
+
         assert!(event_rx.recv_timeout(Duration::from_millis(120)).is_err());
         assert_eq!(actions.drag_starts.load(Ordering::SeqCst), 1);
+        assert_eq!(actions.drag_ends.load(Ordering::SeqCst), 1);
         assert_eq!(actions.captures.load(Ordering::SeqCst), 0);
+        assert_eq!(*actions.order.lock().unwrap(), vec!["drag_start", "drag_end"]);
 
         cmd_tx.send(WorkerCommand::Shutdown).unwrap();
         worker.join().unwrap();

@@ -24,6 +24,9 @@ pub enum StateAction {
         down_at: ScreenPoint,
         current: ScreenPoint,
     },
+    /// Swallow this right-up and replay a synthetic right-up on the worker strictly after
+    /// `ReplayDragStart`, preventing `RightUp` from overtaking `RightDown` and sticking the button.
+    ReplayDragEnd { up_at: ScreenPoint },
     /// Long-press threshold reached while held stationary: swallow menu and trigger panel.
     TriggerLongPress { position: ScreenPoint },
 }
@@ -131,7 +134,8 @@ impl LongPressStateMachine {
                 }
             }
             Phase::Triggered => StateAction::Swallow,
-            Phase::Dragging | Phase::Idle => StateAction::PassThrough,
+            Phase::Dragging => StateAction::ReplayDragEnd { up_at: pos },
+            Phase::Idle => StateAction::PassThrough,
         }
     }
 
@@ -208,7 +212,9 @@ mod tests {
         );
         assert_eq!(
             sm.on_right_up(ScreenPoint::new(120, 50), t0 + Duration::from_millis(500)),
-            StateAction::PassThrough
+            StateAction::ReplayDragEnd {
+                up_at: ScreenPoint::new(120, 50),
+            }
         );
     }
 }

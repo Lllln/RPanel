@@ -130,6 +130,7 @@ pub struct CaptureResult {
 pub enum CaptureSource {
     Accessibility,
     ClipboardShortcut,
+    ClipboardAutoCopy,
     None,
 }
 
@@ -204,6 +205,12 @@ pub fn start_hook(config: HookConfig) -> Result<HookHandle, HookError> {
 /// Capture selected text using platform best-effort strategy.
 pub fn capture_selection() -> Result<CaptureResult, HookError> {
     platform::capture_selection()
+}
+
+/// Query the OS lock-free clipboard change counter (`GetClipboardSequenceNumber` on Windows,
+/// `NSPasteboard.changeCount` on macOS). Returns `None` on unsupported platforms.
+pub fn clipboard_sequence_number() -> Option<u64> {
+    platform::clipboard_sequence_number()
 }
 
 /// Convert a raw OS hook screen coordinate into logical pixels for window placement.

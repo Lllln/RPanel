@@ -93,12 +93,19 @@ fn parse_raw_epoch(input: &str) -> Option<(String, TimestampUnit, i64, u32)> {
     // Strip optional trailing comma or semicolon commonly included when selecting JSON/SQL values.
     token = token.trim_end_matches([',', ';']).trim();
 
-    // Strip matching outer single or double quotes.
-    if token.len() >= 2
-        && ((token.starts_with('"') && token.ends_with('"'))
-            || (token.starts_with('\'') && token.ends_with('\'')))
-    {
-        token = token[1..token.len() - 1].trim();
+    // Strip matching outer quotes, backticks, or brackets/parens commonly grabbed in logs/shells.
+    loop {
+        if token.len() >= 2
+            && ((token.starts_with('"') && token.ends_with('"'))
+                || (token.starts_with('\'') && token.ends_with('\''))
+                || (token.starts_with('`') && token.ends_with('`'))
+                || (token.starts_with('[') && token.ends_with(']'))
+                || (token.starts_with('(') && token.ends_with(')')))
+        {
+            token = token[1..token.len() - 1].trim();
+        } else {
+            break;
+        }
     }
 
     if token.is_empty() || token.starts_with('0') {
@@ -229,6 +236,18 @@ mod tests {
         assert_eq!(frac.unit, TimestampUnit::Seconds);
         assert_eq!(frac.epoch_secs, 1732619278);
         assert_eq!(frac.subsec_nanos, 500_000_000);
+
+        let bracketed = parse_timestamp("[1732619278000]").expect("bracketed timestamp");
+        assert_eq!(bracketed.unit, TimestampUnit::Milliseconds);
+        assert_eq!(bracketed.epoch_secs, 1732619278);
+
+        let backticked = parse_timestamp("`1732619278`").expect("backticked timestamp");
+        assert_eq!(backticked.unit, TimestampUnit::Seconds);
+        assert_eq!(backticked.epoch_secs, 1732619278);
+
+        let parenthesized = parse_timestamp("(1732619278),").expect("parenthesized timestamp");
+        assert_eq!(parenthesized.unit, TimestampUnit::Seconds);
+        assert_eq!(parenthesized.epoch_secs, 1732619278);
     }
 
     #[test]

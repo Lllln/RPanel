@@ -336,6 +336,11 @@ fn handle_hook_event(event: HookEvent, cx: &mut App) {
             // Keep only genuine captured selection; clicking "查看 JSON" opens the editor
             // with this selection auto-converted (or empty if nothing was selected).
             let selected = captured.text.filter(|s| !s.trim().is_empty());
+            info!(
+                source = ?captured.source,
+                captured_chars = selected.as_ref().map(|s| s.chars().count()).unwrap_or(0),
+                "long-press triggered"
+            );
             open_quick_menu(Some(position), selected, cx);
         }
         HookEvent::GlobalMouseDown { position, at } => {
