@@ -5,7 +5,7 @@ pub mod macos;
 pub mod windows;
 
 use crate::clipboard::AutoCopyBaseline;
-use crate::{CaptureResult, HookConfig, HookError, HookHandle};
+use crate::{CaptureResult, GlobalHotkeyHandle, HookConfig, HookError, HookHandle};
 
 pub fn start_platform_hook(config: HookConfig) -> Result<HookHandle, HookError> {
     #[cfg(target_os = "macos")]
@@ -22,6 +22,57 @@ pub fn start_platform_hook(config: HookConfig) -> Result<HookHandle, HookError> 
     {
         let _ = config;
         Err(HookError::UnsupportedPlatform)
+    }
+}
+
+pub fn start_platform_global_hotkey() -> Result<GlobalHotkeyHandle, HookError> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::hotkey::start_global_hotkey()
+    }
+
+    #[cfg(windows)]
+    {
+        windows::hotkey::start_global_hotkey()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Err(HookError::UnsupportedPlatform)
+    }
+}
+
+pub fn current_cursor_position() -> Option<crate::ScreenPoint> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::current_cursor_position()
+    }
+
+    #[cfg(windows)]
+    {
+        windows::current_cursor_position()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        None
+    }
+}
+
+pub fn try_capture_selection_non_intrusive() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::try_capture_selection_non_intrusive()
+    }
+
+    #[cfg(windows)]
+    {
+        windows::try_capture_selection_non_intrusive()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        None
     }
 }
 

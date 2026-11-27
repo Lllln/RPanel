@@ -18,12 +18,46 @@ pub struct ScreenRect {
     pub height: i32,
 }
 
+const CASCADE_STEP_PX: i32 = 28;
+const CASCADE_WRAP: usize = 6;
+
 /// Resolve the target display and clamped bounds for the floating JSON editor panel.
+/// When `cursor` is `None` and `cascade_index > 0`, shifts the centered window gently so multiple
+/// comparison panels do not stack directly on top of one another.
 pub fn resolve_panel_placement(
     cursor: Option<ScreenPoint>,
+    cascade_index: usize,
     cx: &App,
 ) -> (Option<DisplayId>, Bounds<Pixels>) {
-    resolve_window_placement(cursor, PANEL_WIDTH, PANEL_HEIGHT, 14, cx)
+    let (display_id, mut bounds) = resolve_window_placement(cursor, PANEL_WIDTH, PANEL_HEIGHT, 14, cx);
+    if cascade_index > 0 {
+        let step = ((cascade_index % CASCADE_WRAP) as i32) * CASCADE_STEP_PX;
+        let target_display = display_id
+            .and_then(|id| cx.displays().into_iter().find(|d| d.id() == id))
+            .or_else(|| cx.primary_display());
+        if let Some(display) = target_display {
+            let b = display.bounds();
+            let min_x = f32::from(b.origin.x).round() as i32 + EDGE_MARGIN;
+            let min_y = f32::from(b.origin.y).round() as i32 + EDGE_MARGIN;
+            let max_x = (f32::from(b.origin.x + b.size.width).round() as i32
+                - PANEL_WIDTH
+                - EDGE_MARGIN)
+                .max(min_x);
+            let max_y = (f32::from(b.origin.y + b.size.height).round() as i32
+                - PANEL_HEIGHT
+                - EDGE_MARGIN)
+                .max(min_y);
+            let nx = (f32::from(bounds.origin.x).round() as i32 + step).clamp(min_x, max_x);
+            let ny = (f32::from(bounds.origin.y).round() as i32 + step).clamp(min_y, max_y);
+            bounds.origin = Point::new(px(nx as f32), px(ny as f32));
+        } else {
+            bounds.origin = Point::new(
+                bounds.origin.x + px(step as f32),
+                bounds.origin.y + px(step as f32),
+            );
+        }
+    }
+    (display_id, bounds)
 }
 
 /// Resolve the target display and clamped bounds for the compact right-click quick menu.

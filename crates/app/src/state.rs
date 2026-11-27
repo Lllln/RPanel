@@ -75,10 +75,20 @@ impl PanelDocumentState {
     }
 }
 
+/// Snapshot of the most recently closed non-empty panel so accidental dismissal can restore edits
+/// when the OS clipboard has not changed in the meantime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelDraftSnapshot {
+    pub text: String,
+    pub source_format: SourceFormat,
+    pub clipboard_seq: Option<u64>,
+}
+
 /// Configurable runtime settings synchronized with the tray menu and input hook.
 #[derive(Debug, Clone, Copy)]
 pub struct AppSettings {
     pub hook_enabled: bool,
+    pub hotkey_enabled: bool,
     pub hold_duration: Duration,
 }
 
@@ -86,6 +96,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             hook_enabled: true,
+            hotkey_enabled: true,
             hold_duration: Duration::from_millis(300),
         }
     }

@@ -1,9 +1,10 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::Sender;
 use gpui_kit::component::StyledExt;
 use gpui_kit::component::input::{EditorState, InputEvent, Position};
 use gpui_kit::{
@@ -14,7 +15,7 @@ use gpui_kit::{
 use input_hook::{DismissWatchGuard, HookControl};
 use json_engine::{InsightKind, SourceFormat, ValidationStatus};
 
-use crate::state::{FeedbackKind, PanelDocumentState, PanelFeedback};
+use crate::state::{FeedbackKind, PanelDocumentState, PanelDraftSnapshot, PanelFeedback};
 use crate::ui::editor::{
     create_json_editor_state, render_json_editor, sync_validation_diagnostics,
 };
@@ -30,6 +31,7 @@ actions!(
         FormatPrettyAction,
         FormatMinifyAction,
         TogglePinAction,
+        NewPanelAction,
     ]
 );
 
@@ -53,6 +55,10 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-p", TogglePinAction, Some("RPanel")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-p", TogglePinAction, Some("RPanel")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-n", NewPanelAction, Some("RPanel")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-n", NewPanelAction, Some("RPanel")),
     ]);
 }
 
@@ -105,6 +111,21 @@ pub mod palette {
     }
 }
 
+/// Initial document payload passed when opening a [`FloatingPanel`].
+#[derive(Debug, Clone)]
+pub enum PanelInitContent {
+    /// Raw clipboard or selection text that should pass through smart JSON conversion.
+    Raw(Option<String>),
+    /// Previously edited panel content restored verbatim after an accidental dismissal.
+    RestoredDraft {
+        text: String,
+        source_format: SourceFormat,
+    },
+}
+
+/// Shared draft snapshot updated whenever a non-empty panel closes.
+pub type SharedDraftStore = Arc<Mutex<Option<PanelDraftSnapshot>>>;
+
 /// Grace period after opening before window deactivation triggers auto-hide.
 const FOCUS_LOSS_GRACE: Duration = Duration::from_millis(260);
 
@@ -112,6 +133,7 @@ pub struct FloatingPanel {
     focus_handle: FocusHandle,
     editor: Entity<EditorState>,
     doc: PanelDocumentState,
+    current_text_cache: String,
     last_applied_text: Option<String>,
     rounded: bool,
     opened_at: Instant,
@@ -119,29 +141,42 @@ pub struct FloatingPanel {
     pinned: Arc<AtomicBool>,
     hook_control: Option<Arc<HookControl>>,
     dismiss_watch: Option<DismissWatchGuard>,
+    draft_store: SharedDraftStore,
+    new_panel_tx: Sender<()>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl FloatingPanel {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        initial_raw: Option<String>,
+        init_content: PanelInitContent,
         pinned: Arc<AtomicBool>,
         rounded: bool,
         hook_control: Option<Arc<HookControl>>,
         dismiss_watch: Option<DismissWatchGuard>,
+        draft_store: SharedDraftStore,
+        new_panel_tx: Sender<()>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (source_format, initial_text) = match initial_raw {
-            Some(raw) if !raw.trim().is_empty() => {
+        let (source_format, initial_text, initial_feedback) = match init_content {
+            PanelInitContent::Raw(Some(raw)) if !raw.trim().is_empty() => {
                 let converted = json_engine::convert_to_json(&raw);
-                (converted.source_format, converted.formatted)
+                (converted.source_format, converted.formatted, None)
             }
-            _ => (SourceFormat::Json, String::new()),
+            PanelInitContent::Raw(_) => (SourceFormat::Json, String::new(), None),
+            PanelInitContent::RestoredDraft {
+                text,
+                source_format,
+            } => (
+                source_format,
+                text,
+                Some(PanelFeedback::info("已恢复上次内容")),
+            ),
         };
 
-        let doc = PanelDocumentState::from_text(source_format, &initial_text);
+        let mut doc = PanelDocumentState::from_text(source_format, &initial_text);
+        doc.feedback = initial_feedback;
         let editor = create_json_editor_state(&initial_text, window, cx);
         let initial_validation = doc.validation.clone();
         editor.update(cx, |state, cx| {
@@ -152,6 +187,7 @@ impl FloatingPanel {
         let editor_sub = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 let text = editor.read(cx).value().to_string();
+                this.current_text_cache = text.clone();
                 if this.last_applied_text.as_deref() == Some(text.as_str()) {
                     this.last_applied_text = None;
                 } else {
@@ -184,6 +220,7 @@ impl FloatingPanel {
             focus_handle: cx.focus_handle(),
             editor,
             doc,
+            current_text_cache: initial_text,
             last_applied_text: None,
             rounded,
             opened_at: Instant::now(),
@@ -191,6 +228,8 @@ impl FloatingPanel {
             pinned,
             hook_control,
             dismiss_watch,
+            draft_store,
+            new_panel_tx,
             _subscriptions: vec![editor_sub, activation_sub],
         }
     }
@@ -199,13 +238,11 @@ impl FloatingPanel {
         self.pinned.load(Ordering::Acquire)
     }
 
-    fn toggle_pin(&mut self, cx: &mut Context<Self>) {
-        let next = !self.is_pinned();
+    fn set_pinned(&mut self, next: bool, cx: &mut Context<Self>) {
         self.pinned.store(next, Ordering::Release);
         if next {
             // Pause global mouse-down watch while pinned so outside clicks never dismiss the panel.
             self.dismiss_watch = None;
-            self.doc.feedback = Some(PanelFeedback::info("已固定"));
         } else {
             if self.dismiss_watch.is_none() {
                 self.dismiss_watch = self
@@ -213,9 +250,43 @@ impl FloatingPanel {
                     .as_ref()
                     .map(|ctrl| ctrl.acquire_dismiss_watch());
             }
-            self.doc.feedback = Some(PanelFeedback::info("已取消固定"));
+            if self
+                .doc
+                .feedback
+                .as_ref()
+                .is_some_and(|fb| fb.kind == FeedbackKind::Info && fb.message.starts_with("已固定"))
+            {
+                self.doc.feedback = None;
+            }
         }
         cx.notify();
+    }
+
+    fn toggle_pin(&mut self, cx: &mut Context<Self>) {
+        let next = !self.is_pinned();
+        self.set_pinned(next, cx);
+    }
+
+    fn open_new_panel(&mut self, cx: &mut Context<Self>) {
+        // Keep the current panel visible side-by-side when opening a comparison window.
+        if !self.is_pinned() {
+            self.set_pinned(true, cx);
+        }
+        let _ = self.new_panel_tx.send(());
+    }
+
+    fn persist_draft_snapshot(&self) {
+        if self.current_text_cache.trim().is_empty() {
+            return;
+        }
+        let snapshot = PanelDraftSnapshot {
+            text: self.current_text_cache.clone(),
+            source_format: self.doc.source_format,
+            clipboard_seq: input_hook::clipboard_sequence_number(),
+        };
+        if let Ok(mut slot) = self.draft_store.lock() {
+            *slot = Some(snapshot);
+        }
     }
 
     fn handle_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -244,6 +315,7 @@ impl FloatingPanel {
     ) {
         self.doc.refresh_metrics(&new_text);
         self.doc.feedback = Some(PanelFeedback::info(feedback));
+        self.current_text_cache = new_text.clone();
         self.last_applied_text = Some(new_text.clone());
         let validation = self.doc.validation.clone();
         self.editor.update(cx, |state, cx| {
@@ -321,10 +393,12 @@ impl FloatingPanel {
 
     fn copy_and_hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.current_text(cx);
+        self.current_text_cache = text.clone();
         if let Err(err) = input_hook::clipboard::write_clipboard_text(&text) {
             self.set_error_feedback(format!("复制失败：{err}"), cx);
             return;
         }
+        self.persist_draft_snapshot();
         if self.is_pinned() {
             self.doc.feedback = Some(PanelFeedback::info("已复制"));
             cx.notify();
@@ -361,6 +435,12 @@ impl FloatingPanel {
                 state.focus(window, cx);
             });
         }
+    }
+}
+
+impl Drop for FloatingPanel {
+    fn drop(&mut self) {
+        self.persist_draft_snapshot();
     }
 }
 
@@ -411,6 +491,9 @@ impl Render for FloatingPanel {
             }))
             .on_action(cx.listener(|this, _: &TogglePinAction, _, cx| {
                 this.toggle_pin(cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewPanelAction, _, cx| {
+                this.open_new_panel(cx);
             }))
             .flex()
             .flex_col()

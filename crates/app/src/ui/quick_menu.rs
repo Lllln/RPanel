@@ -33,6 +33,7 @@ pub fn register_quick_menu_keybindings(cx: &mut App) {
 pub struct OpenEditorRequest {
     pub cursor: Option<ScreenPoint>,
     pub captured_text: Option<String>,
+    pub is_explicit_selection: bool,
 }
 
 const MENU_BLUR_GRACE: Duration = Duration::from_millis(260);
@@ -44,6 +45,7 @@ pub struct QuickActionMenu {
     focus_handle: FocusHandle,
     cursor: Option<ScreenPoint>,
     captured_text: Option<String>,
+    is_explicit_selection: bool,
     smart_insight: Option<SmartInsight>,
     open_editor_tx: Sender<OpenEditorRequest>,
     rounded: bool,
@@ -58,6 +60,7 @@ impl QuickActionMenu {
     pub fn new(
         cursor: Option<ScreenPoint>,
         captured_text: Option<String>,
+        is_explicit_selection: bool,
         smart_insight: Option<SmartInsight>,
         open_editor_tx: Sender<OpenEditorRequest>,
         rounded: bool,
@@ -81,6 +84,7 @@ impl QuickActionMenu {
             focus_handle,
             cursor,
             captured_text,
+            is_explicit_selection,
             smart_insight,
             open_editor_tx,
             rounded,
@@ -92,14 +96,19 @@ impl QuickActionMenu {
     }
 
     fn trigger_open_editor(&mut self, window: &mut Window) {
-        let editor_payload = self
+        let decoded_json = self
             .smart_insight
             .as_mut()
-            .and_then(|insight| insight.editor_json.take())
-            .or_else(|| self.captured_text.take());
+            .and_then(|insight| insight.editor_json.take());
+        let (editor_payload, is_explicit) = if let Some(decoded) = decoded_json {
+            (Some(decoded), true)
+        } else {
+            (self.captured_text.take(), self.is_explicit_selection)
+        };
         let _ = self.open_editor_tx.send(OpenEditorRequest {
             cursor: self.cursor,
             captured_text: editor_payload,
+            is_explicit_selection: is_explicit,
         });
         window.remove_window();
     }

@@ -1,3 +1,4 @@
+pub mod hotkey;
 pub mod keyboard;
 
 use std::backtrace::Backtrace;
@@ -39,9 +40,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GA_ROOT, GetAncestor, GetClassNameW, GetForegroundWindow,
-    GetMessageW, GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, HC_ACTION,
-    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SM_CXVIRTUALSCREEN,
+    CallNextHookEx, DispatchMessageW, GA_ROOT, GetAncestor, GetClassNameW, GetCursorPos,
+    GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId,
+    HC_ACTION, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PostThreadMessageW, SM_CXVIRTUALSCREEN,
     SM_CYVIRTUALSCREEN, SM_REMOTESESSION, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetWindowsHookExW,
     TranslateMessage, UnhookWindowsHookEx, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
     WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_XBUTTONDOWN, WindowFromPoint,
@@ -782,6 +783,19 @@ pub fn window_contains_screen_point(hwnd_raw: isize, point: ScreenPoint) -> Opti
             && point.y >= rect.top
             && point.y < rect.bottom,
     )
+}
+
+/// Query the current global cursor location in Win32 physical screen coordinates.
+pub fn current_cursor_position() -> Option<ScreenPoint> {
+    let mut pt = POINT::default();
+    // SAFETY: `GetCursorPos` writes the current physical screen cursor coordinates into `pt`.
+    unsafe { GetCursorPos(&mut pt) }.ok()?;
+    Some(ScreenPoint::new(pt.x, pt.y))
+}
+
+/// Windows does not have a zero-keystroke cross-app selection API safe during hotkey chord hold.
+pub fn try_capture_selection_non_intrusive() -> Option<String> {
+    None
 }
 
 static VEH_LOGGED: AtomicBool = AtomicBool::new(false);

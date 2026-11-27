@@ -44,13 +44,13 @@ pub fn render_status_bar(
 
     #[cfg(target_os = "macos")]
     let shortcut_hint = if pinned {
-        "已固定 · ⌘+Enter 复制 · ⌘P 取消固定"
+        "⌘+Enter 复制 · ⌘P 取消固定 · ⌘N 新开"
     } else {
         "⌘+Enter 复制 · ⌘P 固定 · Esc 关闭"
     };
     #[cfg(not(target_os = "macos"))]
     let shortcut_hint = if pinned {
-        "已固定 · Ctrl+Enter 复制 · Ctrl+P 取消固定"
+        "Ctrl+Enter 复制 · Ctrl+P 取消固定 · Ctrl+N 新开"
     } else {
         "Ctrl+Enter 复制 · Ctrl+P 固定 · Esc 关闭"
     };

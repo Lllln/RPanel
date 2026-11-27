@@ -1,5 +1,5 @@
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
-use gpui_kit::component::{Sizable, StyledExt};
+use gpui_kit::component::{Icon, Sizable, StyledExt};
 use gpui_kit::{
     App, ClickEvent, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Window,
     WindowControlArea, div, px, rgb,
@@ -7,6 +7,12 @@ use gpui_kit::{
 use json_engine::SourceFormat;
 
 use crate::ui::panel::palette;
+
+const PIN_OUTLINE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><g transform="rotate(35 12 12)"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></g></svg>"#;
+
+const PIN_FILLED_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path fill="currentColor" d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>"#;
+
+const CLOSE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>"#;
 
 pub type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
@@ -54,6 +60,12 @@ pub fn render_toolbar(
         .hover(rgb(palette::HOVER_BG).into())
         .active(rgb(palette::ACTIVE_BG).into());
 
+    let apple_icon_subtle = ButtonCustomVariant::new(cx)
+        .color(rgb(palette::SURFACE_BG).into())
+        .foreground(rgb(palette::INK_SECONDARY).into())
+        .hover(rgb(palette::HOVER_BG).into())
+        .active(rgb(palette::ACTIVE_BG).into());
+
     let apple_pinned = ButtonCustomVariant::new(cx)
         .color(rgb(palette::ACCENT_TINT).into())
         .foreground(rgb(palette::ACCENT).into())
@@ -70,9 +82,9 @@ pub fn render_toolbar(
             "复制 JSON 并关闭面板 (⌘↵)"
         },
         if pinned {
-            "已固定，防止误触关闭 · 点击取消 (⌘P)"
+            "已固定 · 点击取消 (⌘P)"
         } else {
-            "固定面板，防止点击外部或按 Esc 误关 (⌘P)"
+            "固定面板，防止误触关闭并支持多开对比 (⌘P)"
         },
     );
     #[cfg(not(target_os = "macos"))]
@@ -85,18 +97,37 @@ pub fn render_toolbar(
             "复制 JSON 并关闭面板 (Ctrl+Enter)"
         },
         if pinned {
-            "已固定，防止误触关闭 · 点击取消 (Ctrl+P)"
+            "已固定 · 点击取消 (Ctrl+P)"
         } else {
-            "固定面板，防止点击外部或按 Esc 误关 (Ctrl+P)"
+            "固定面板，防止误触关闭并支持多开对比 (Ctrl+P)"
         },
     );
 
+    let pin_icon = Icon::empty().data(if pinned {
+        PIN_FILLED_SVG
+    } else {
+        PIN_OUTLINE_SVG
+    });
+
     let pin_button = Button::new("btn-pin")
-        .custom(if pinned { apple_pinned } else { apple_subtle })
+        .custom(if pinned {
+            apple_pinned
+        } else {
+            apple_icon_subtle
+        })
         .xsmall()
-        .label(if pinned { "已固定" } else { "固定" })
+        .icon(pin_icon)
+        .accessibility_label(if pinned { "取消固定" } else { "固定面板" })
         .tooltip(tip_pin)
         .on_click(callbacks.on_toggle_pin);
+
+    let close_button = Button::new("btn-close")
+        .custom(apple_icon_subtle)
+        .xsmall()
+        .icon(Icon::empty().data(CLOSE_SVG))
+        .accessibility_label("关闭面板")
+        .tooltip("关闭面板")
+        .on_click(callbacks.on_close);
 
     div()
         .flex()
@@ -219,13 +250,6 @@ pub fn render_toolbar(
                         .on_click(callbacks.on_copy_hide),
                 )
                 .child(pin_button)
-                .child(
-                    Button::new("btn-close")
-                        .custom(apple_subtle)
-                        .xsmall()
-                        .label("×")
-                        .tooltip("关闭面板")
-                        .on_click(callbacks.on_close),
-                ),
+                .child(close_button),
         )
 }

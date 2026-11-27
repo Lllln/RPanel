@@ -10,6 +10,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 pub enum TrayCommand {
     OpenFromClipboard,
     ToggleEnabled,
+    ToggleHotkey,
     SetHoldMs(u64),
     Quit,
 }
@@ -20,16 +21,23 @@ const THRESHOLD_PRESETS_MS: [u64; 4] = [250, 300, 450, 600];
 pub struct TrayController {
     _tray: TrayIcon,
     enabled_item: CheckMenuItem,
+    hotkey_item: CheckMenuItem,
     threshold_items: Vec<(u64, CheckMenuItem)>,
 }
 
 impl TrayController {
     pub fn init(
         initial_hold_ms: u64,
+        hotkey_active: bool,
         command_tx: Sender<TrayCommand>,
     ) -> Result<Self, String> {
         let open_item = MenuItem::new("打开 JSON 编辑器（剪贴板）", true, None);
         let enabled_item = CheckMenuItem::new("启用右键长按拦截", true, true, None);
+        #[cfg(target_os = "macos")]
+        let hotkey_label = "启用全局快捷键 (⌃⌥Space)";
+        #[cfg(not(target_os = "macos"))]
+        let hotkey_label = "启用全局快捷键 (Ctrl+Alt+Space)";
+        let hotkey_item = CheckMenuItem::new(hotkey_label, hotkey_active, hotkey_active, None);
 
         let threshold_menu = Submenu::new("长按时长阈值", true);
         let mut threshold_items = Vec::with_capacity(THRESHOLD_PRESETS_MS.len());
@@ -58,6 +66,8 @@ impl TrayController {
             .map_err(|e| format!("failed to append separator: {e}"))?;
         menu.append(&enabled_item)
             .map_err(|e| format!("failed to append enabled item: {e}"))?;
+        menu.append(&hotkey_item)
+            .map_err(|e| format!("failed to append hotkey item: {e}"))?;
         menu.append(&threshold_menu)
             .map_err(|e| format!("failed to append threshold submenu: {e}"))?;
         menu.append(&PredefinedMenuItem::separator())
@@ -79,6 +89,7 @@ impl TrayController {
 
         let open_id: MenuId = open_item.id().clone();
         let enabled_id: MenuId = enabled_item.id().clone();
+        let hotkey_id: MenuId = hotkey_item.id().clone();
         let quit_id: MenuId = quit_item.id().clone();
 
         thread::Builder::new()
@@ -90,6 +101,8 @@ impl TrayController {
                         Some(TrayCommand::OpenFromClipboard)
                     } else if event.id == enabled_id {
                         Some(TrayCommand::ToggleEnabled)
+                    } else if event.id == hotkey_id {
+                        Some(TrayCommand::ToggleHotkey)
                     } else if event.id == quit_id {
                         Some(TrayCommand::Quit)
                     } else {
@@ -111,12 +124,17 @@ impl TrayController {
         Ok(Self {
             _tray: tray,
             enabled_item,
+            hotkey_item,
             threshold_items,
         })
     }
 
     pub fn sync_enabled(&self, enabled: bool) {
         self.enabled_item.set_checked(enabled);
+    }
+
+    pub fn sync_hotkey_enabled(&self, enabled: bool) {
+        self.hotkey_item.set_checked(enabled);
     }
 
     pub fn sync_threshold(&self, active_ms: u64) {

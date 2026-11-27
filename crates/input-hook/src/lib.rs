@@ -197,9 +197,68 @@ impl Drop for HookHandle {
     }
 }
 
+/// Event emitted when the global toggle hotkey (`Ctrl + Alt + Space`) is pressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalHotkeyEvent {
+    pub position: Option<ScreenPoint>,
+}
+
+/// Handle owning the OS-registered global hotkey (`Ctrl + Alt + Space`) and its enable flag.
+pub struct GlobalHotkeyHandle {
+    pub events: Receiver<GlobalHotkeyEvent>,
+    enabled: Arc<AtomicBool>,
+    stop_signal: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl GlobalHotkeyHandle {
+    pub fn new(
+        events: Receiver<GlobalHotkeyEvent>,
+        enabled: Arc<AtomicBool>,
+        stop_signal: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            events,
+            enabled,
+            stop_signal: Some(Box::new(stop_signal)),
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+}
+
+impl Drop for GlobalHotkeyHandle {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop_signal.take() {
+            stop();
+        }
+    }
+}
+
 /// Start the platform global right-click long-press hook.
 pub fn start_hook(config: HookConfig) -> Result<HookHandle, HookError> {
     platform::start_platform_hook(config)
+}
+
+/// Register the platform global hotkey (`Ctrl + Alt + Space`, i.e., `⌃⌥Space` on macOS).
+/// Must be called on the main UI thread on macOS.
+pub fn start_global_hotkey() -> Result<GlobalHotkeyHandle, HookError> {
+    platform::start_platform_global_hotkey()
+}
+
+/// Query the current global screen cursor position in platform raw coordinates.
+pub fn current_cursor_position() -> Option<ScreenPoint> {
+    platform::current_cursor_position()
+}
+
+/// Best-effort silent selection read (e.g. macOS Accessibility) without injecting synthetic keys.
+pub fn try_capture_selection_non_intrusive() -> Option<String> {
+    platform::try_capture_selection_non_intrusive()
 }
 
 /// Capture selected text using platform best-effort strategy.

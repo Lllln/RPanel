@@ -1,4 +1,5 @@
 pub mod ax_selection;
+pub mod hotkey;
 pub mod keyboard;
 pub mod permission;
 
@@ -475,4 +476,22 @@ pub fn window_contains_screen_point(ns_view_raw: isize, point: ScreenPoint) -> O
     let px = f64::from(point.x);
     let py = f64::from(point.y);
     Some(px >= left && px < right && py >= top && py < bottom)
+}
+
+/// Query the current global cursor location in Quartz top-left logical coordinates.
+pub fn current_cursor_position() -> Option<ScreenPoint> {
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+    let event = CGEvent::new(source).ok()?;
+    let loc = event.location();
+    Some(ScreenPoint::new(
+        loc.x.round() as i32,
+        loc.y.round() as i32,
+    ))
+}
+
+/// Try reading the current selection silently via macOS Accessibility APIs without injecting keys.
+pub fn try_capture_selection_non_intrusive() -> Option<String> {
+    ax_selection::try_read_selected_text()
+        .and_then(|res| res.text)
+        .filter(|s| !s.trim().is_empty())
 }

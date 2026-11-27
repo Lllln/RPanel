@@ -10,7 +10,7 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -23,16 +23,19 @@ use gpui_kit::{
     WindowOptions, rgb, transparent_black,
 };
 use input_hook::{
-    HookConfig, HookControl, HookError, HookEvent, HookHandle, ScreenPoint, SingleInstanceGuard,
+    GlobalHotkeyEvent, GlobalHotkeyHandle, HookConfig, HookControl, HookError, HookEvent,
+    HookHandle, ScreenPoint, SingleInstanceGuard,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::placement::{resolve_panel_placement, resolve_quick_menu_placement};
-use crate::state::AppSettings;
+use crate::state::{AppSettings, PanelDraftSnapshot};
 use crate::tray::{TrayCommand, TrayController};
-use crate::ui::panel::{FloatingPanel, register_keybindings};
+use crate::ui::panel::{
+    FloatingPanel, PanelInitContent, SharedDraftStore, register_keybindings,
+};
 use crate::ui::quick_menu::{
     OpenEditorRequest, QuickActionMenu, register_quick_menu_keybindings,
 };
@@ -48,10 +51,13 @@ struct TrackedWindow {
 struct AppRuntime {
     settings: AppSettings,
     active_menu: Option<TrackedWindow>,
-    active_panel: Option<TrackedWindow>,
+    active_panels: Vec<TrackedWindow>,
+    draft_store: SharedDraftStore,
     open_editor_tx: Sender<OpenEditorRequest>,
+    new_panel_tx: Sender<()>,
     tray: Option<TrayController>,
     hook_control: Option<Arc<HookControl>>,
+    hotkey_handle: Option<GlobalHotkeyHandle>,
     _hook_handle: Option<HookHandle>,
     _single_instance: SingleInstanceGuard,
 }
@@ -160,8 +166,21 @@ fn main() {
 
             let (tray_tx, tray_rx) = unbounded::<TrayCommand>();
             let (open_editor_tx, open_editor_rx) = unbounded::<OpenEditorRequest>();
+            let (new_panel_tx, new_panel_rx) = unbounded::<()>();
 
-            let tray = match TrayController::init(args.hold_ms, tray_tx) {
+            let (hotkey_handle, hotkey_rx) = match input_hook::start_global_hotkey() {
+                Ok(handle) => {
+                    let rx = handle.events.clone();
+                    (Some(handle), Some(rx))
+                }
+                Err(err) => {
+                    warn!("Global hotkey Ctrl+Alt+Space unavailable: {err}");
+                    (None, None)
+                }
+            };
+            let hotkey_active = hotkey_handle.is_some();
+
+            let tray = match TrayController::init(args.hold_ms, hotkey_active, tray_tx) {
                 Ok(controller) => Some(controller),
                 Err(err) => {
                     warn!("System tray unavailable: {err}");
@@ -197,13 +216,17 @@ fn main() {
             cx.set_global(AppRuntime {
                 settings: AppSettings {
                     hook_enabled: true,
+                    hotkey_enabled: hotkey_active,
                     hold_duration: initial_config.hold_duration,
                 },
                 active_menu: None,
-                active_panel: None,
+                active_panels: Vec::new(),
+                draft_store: Arc::new(Mutex::new(None)),
                 open_editor_tx,
+                new_panel_tx,
                 tray,
                 hook_control,
+                hotkey_handle,
                 _hook_handle: hook_handle,
                 _single_instance: single_instance,
             });
@@ -212,7 +235,7 @@ fn main() {
                 let text = args
                     .preview_text
                     .unwrap_or_else(|| r#"{"app":"RPanel","mode":"quick-menu"}"#.to_string());
-                open_quick_menu(None, Some(text), cx);
+                open_quick_menu(None, Some(text), true, cx);
             } else if args.preview {
                 let sample = args.preview_text.unwrap_or_else(|| {
                     r#"{
@@ -223,10 +246,10 @@ fn main() {
 }"#
                     .to_string()
                 });
-                open_floating_panel(Some(sample), None, false, cx);
+                open_floating_panel(PanelInitContent::Raw(Some(sample)), None, false, true, cx);
             }
 
-            // Poll tray, quick-menu, and input-hook channels on a lightweight 16ms cadence.
+            // Poll tray, quick-menu, hotkey, and input-hook channels on a lightweight 16ms cadence.
             cx.spawn(async move |cx| {
                 loop {
                     cx.background_executor()
@@ -245,14 +268,28 @@ fn main() {
                         }
                     }
 
+                    let mut pending_hotkeys = Vec::new();
+                    if let Some(rx) = &hotkey_rx {
+                        while let Ok(ev) = rx.try_recv() {
+                            pending_hotkeys.push(ev);
+                        }
+                    }
+
                     let mut pending_opens = Vec::new();
                     while let Ok(req) = open_editor_rx.try_recv() {
                         pending_opens.push(req);
                     }
 
+                    let mut pending_new_panels = 0usize;
+                    while new_panel_rx.try_recv().is_ok() {
+                        pending_new_panels += 1;
+                    }
+
                     if pending_tray.is_empty()
                         && pending_hooks.is_empty()
+                        && pending_hotkeys.is_empty()
                         && pending_opens.is_empty()
+                        && pending_new_panels == 0
                     {
                         continue;
                     }
@@ -266,8 +303,26 @@ fn main() {
                         for ev in pending_hooks {
                             handle_hook_event(ev, cx);
                         }
+                        for ev in pending_hotkeys {
+                            handle_global_hotkey(ev, cx);
+                        }
                         for req in pending_opens {
-                            open_floating_panel(req.captured_text, req.cursor, true, cx);
+                            let content = resolve_open_editor_content(
+                                req.captured_text,
+                                req.is_explicit_selection,
+                                cx,
+                            );
+                            open_floating_panel(content, req.cursor, true, true, cx);
+                        }
+                        for _ in 0..pending_new_panels {
+                            let clipboard = input_hook::clipboard::read_clipboard_text().ok();
+                            open_floating_panel(
+                                PanelInitContent::Raw(clipboard),
+                                None,
+                                true,
+                                false,
+                                cx,
+                            );
                         }
                         false
                     });
@@ -281,11 +336,55 @@ fn main() {
         });
 }
 
+fn matching_draft_snapshot(
+    draft_store: &SharedDraftStore,
+    current_clipboard_seq: Option<u64>,
+) -> Option<PanelDraftSnapshot> {
+    let seq = current_clipboard_seq?;
+    let guard = draft_store.lock().ok()?;
+    let snapshot = guard.as_ref()?;
+    if snapshot.clipboard_seq == Some(seq) && !snapshot.text.trim().is_empty() {
+        Some(snapshot.clone())
+    } else {
+        None
+    }
+}
+
+fn resolve_open_editor_content(
+    captured_text: Option<String>,
+    is_explicit_selection: bool,
+    cx: &App,
+) -> PanelInitContent {
+    let draft_store = Arc::clone(&cx.global::<AppRuntime>().draft_store);
+    let current_seq = input_hook::clipboard_sequence_number();
+    resolve_open_editor_content_inner(captured_text, is_explicit_selection, &draft_store, current_seq)
+}
+
+fn resolve_open_editor_content_inner(
+    captured_text: Option<String>,
+    is_explicit_selection: bool,
+    draft_store: &SharedDraftStore,
+    current_clipboard_seq: Option<u64>,
+) -> PanelInitContent {
+    let non_empty = captured_text.filter(|s| !s.trim().is_empty());
+    if is_explicit_selection && non_empty.is_some() {
+        return PanelInitContent::Raw(non_empty);
+    }
+    if let Some(draft) = matching_draft_snapshot(draft_store, current_clipboard_seq) {
+        return PanelInitContent::RestoredDraft {
+            text: draft.text,
+            source_format: draft.source_format,
+        };
+    }
+    PanelInitContent::Raw(non_empty)
+}
+
 fn handle_tray_command(cmd: TrayCommand, cx: &mut App) -> bool {
     match cmd {
         TrayCommand::OpenFromClipboard => {
-            let text = input_hook::clipboard::read_clipboard_text().ok();
-            open_floating_panel(text, None, true, cx);
+            let clipboard = input_hook::clipboard::read_clipboard_text().ok();
+            let content = resolve_open_editor_content(clipboard, false, cx);
+            open_floating_panel(content, None, true, true, cx);
             false
         }
         TrayCommand::ToggleEnabled => {
@@ -301,6 +400,21 @@ fn handle_tray_command(cmd: TrayCommand, cx: &mut App) -> bool {
                 runtime.settings.hook_enabled
             };
             info!(enabled = next, "toggled global right-click hook");
+            false
+        }
+        TrayCommand::ToggleHotkey => {
+            let next = {
+                let runtime = cx.global_mut::<AppRuntime>();
+                if let Some(hotkey) = &runtime.hotkey_handle {
+                    runtime.settings.hotkey_enabled = !runtime.settings.hotkey_enabled;
+                    hotkey.set_enabled(runtime.settings.hotkey_enabled);
+                    if let Some(tray) = &runtime.tray {
+                        tray.sync_hotkey_enabled(runtime.settings.hotkey_enabled);
+                    }
+                }
+                runtime.settings.hotkey_enabled
+            };
+            info!(enabled = next, "toggled global Ctrl+Alt+Space hotkey");
             false
         }
         TrayCommand::SetHoldMs(ms) => {
@@ -320,8 +434,9 @@ fn handle_tray_command(cmd: TrayCommand, cx: &mut App) -> bool {
         }
         TrayCommand::Quit => {
             info!("quitting RPanel from tray menu");
-            // Explicitly unhook the global mouse hook before terminating the UI event loop.
+            // Explicitly unhook global hooks and hotkey before terminating the UI event loop.
             let runtime = cx.global_mut::<AppRuntime>();
+            runtime.hotkey_handle.take();
             runtime._hook_handle.take();
             runtime.tray.take();
             cx.quit();
@@ -330,18 +445,59 @@ fn handle_tray_command(cmd: TrayCommand, cx: &mut App) -> bool {
     }
 }
 
+fn handle_global_hotkey(event: GlobalHotkeyEvent, cx: &mut App) {
+    // Toggle behavior: if the compact quick menu is already open, dismiss it immediately.
+    let existing_menu = cx.global_mut::<AppRuntime>().active_menu.take();
+    if let Some(tracked) = existing_menu {
+        let was_alive = tracked
+            .handle
+            .update(cx, |_, window, _| {
+                window.remove_window();
+            })
+            .is_ok();
+        if was_alive {
+            info!("global hotkey dismissed active quick menu");
+            return;
+        }
+    }
+
+    // Prefer silent non-intrusive selection (macOS AX), then matching saved draft, then clipboard.
+    let (text, is_explicit) = if let Some(sel) = input_hook::try_capture_selection_non_intrusive() {
+        (Some(sel), true)
+    } else {
+        let draft_store = Arc::clone(&cx.global::<AppRuntime>().draft_store);
+        let current_seq = input_hook::clipboard_sequence_number();
+        if let Some(draft) = matching_draft_snapshot(&draft_store, current_seq) {
+            (Some(draft.text), false)
+        } else {
+            let clip = input_hook::clipboard::read_clipboard_text()
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            (clip, false)
+        }
+    };
+
+    info!(
+        has_text = text.is_some(),
+        is_explicit,
+        "global hotkey summoned quick menu"
+    );
+    open_quick_menu(event.position, text, is_explicit, cx);
+}
+
 fn handle_hook_event(event: HookEvent, cx: &mut App) {
     match event {
         HookEvent::LongPressTriggered { position, captured } => {
             // Keep only genuine captured selection; clicking "查看 JSON" opens the editor
-            // with this selection auto-converted (or empty if nothing was selected).
+            // with this selection auto-converted (or restores an unchanged draft if nothing was selected).
             let selected = captured.text.filter(|s| !s.trim().is_empty());
+            let is_explicit = selected.is_some();
             info!(
                 source = ?captured.source,
                 captured_chars = selected.as_ref().map(|s| s.chars().count()).unwrap_or(0),
                 "long-press triggered"
             );
-            open_quick_menu(Some(position), selected, cx);
+            open_quick_menu(Some(position), selected, is_explicit, cx);
         }
         HookEvent::GlobalMouseDown { position, at } => {
             handle_global_mouse_down(position, at, cx);
@@ -353,9 +509,9 @@ fn handle_hook_event(event: HookEvent, cx: &mut App) {
 }
 
 fn handle_global_mouse_down(position: ScreenPoint, at: Instant, cx: &mut App) {
-    let (menu, panel) = {
+    let (menu, panels) = {
         let runtime = cx.global::<AppRuntime>();
-        (runtime.active_menu.clone(), runtime.active_panel.clone())
+        (runtime.active_menu.clone(), runtime.active_panels.clone())
     };
 
     if let Some(tracked) = menu
@@ -371,17 +527,17 @@ fn handle_global_mouse_down(position: ScreenPoint, at: Instant, cx: &mut App) {
         }
     }
 
-    if let Some(tracked) = panel
-        && should_clear_after_outside_click(&tracked, position, at, cx)
-    {
-        let runtime = cx.global_mut::<AppRuntime>();
-        if runtime
-            .active_panel
-            .as_ref()
-            .is_some_and(|current| current.handle == tracked.handle)
-        {
-            runtime.active_panel = None;
+    let mut to_remove = Vec::new();
+    for tracked in &panels {
+        if should_clear_after_outside_click(tracked, position, at, cx) {
+            to_remove.push(tracked.handle);
         }
+    }
+    if !to_remove.is_empty() {
+        let runtime = cx.global_mut::<AppRuntime>();
+        runtime
+            .active_panels
+            .retain(|current| !to_remove.contains(&current.handle));
     }
 }
 
@@ -428,7 +584,12 @@ fn native_window_handle(window: &Window) -> Option<isize> {
     }
 }
 
-fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, cx: &mut App) {
+fn open_quick_menu(
+    cursor: Option<ScreenPoint>,
+    captured_text: Option<String>,
+    is_explicit_selection: bool,
+    cx: &mut App,
+) {
     let (prev_menu, open_editor_tx, dismiss_watch) = {
         let runtime = cx.global_mut::<AppRuntime>();
         let prev = runtime.active_menu.take();
@@ -470,6 +631,7 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
                 QuickActionMenu::new(
                     cursor,
                     captured_text,
+                    is_explicit_selection,
                     smart_insight,
                     open_editor_tx,
                     rounded,
@@ -496,30 +658,59 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
 }
 
 fn open_floating_panel(
-    initial_raw: Option<String>,
+    init_content: PanelInitContent,
     cursor: Option<ScreenPoint>,
     auto_hide_on_blur: bool,
+    dismiss_existing_unpinned: bool,
     cx: &mut App,
 ) {
     let initial_pinned = !auto_hide_on_blur;
     let pinned = Arc::new(AtomicBool::new(initial_pinned));
 
-    let (prev_menu, prev_panel, hook_control, dismiss_watch) = {
+    let (prev_menu, existing_panels, hook_control, dismiss_watch, draft_store, new_panel_tx) = {
         let runtime = cx.global_mut::<AppRuntime>();
         let prev_menu = runtime.active_menu.take();
-        let prev_panel = runtime.active_panel.take();
+        let existing_panels = std::mem::take(&mut runtime.active_panels);
         let hook_control = runtime.hook_control.clone();
         let watch = if !initial_pinned {
             hook_control.as_ref().map(|ctrl| ctrl.acquire_dismiss_watch())
         } else {
             None
         };
-        (prev_menu, prev_panel, hook_control, watch)
+        let draft_store = Arc::clone(&runtime.draft_store);
+        let new_panel_tx = runtime.new_panel_tx.clone();
+        (
+            prev_menu,
+            existing_panels,
+            hook_control,
+            watch,
+            draft_store,
+            new_panel_tx,
+        )
     };
     dismiss_window(prev_menu, cx);
-    dismiss_window(prev_panel, cx);
 
-    let (display_id, bounds) = resolve_panel_placement(cursor, cx);
+    // Keep all live pinned panels open for side-by-side comparison; dismiss unpinned panels
+    // when opening via standard triggers so temporary windows never pile up.
+    let mut kept_panels = Vec::with_capacity(existing_panels.len());
+    for tracked in existing_panels {
+        let is_live = tracked.handle.update(cx, |_, _, _| ()).is_ok();
+        if !is_live {
+            continue;
+        }
+        if dismiss_existing_unpinned && !tracked.pinned.load(Ordering::Acquire) {
+            dismiss_window(Some(tracked), cx);
+        } else {
+            kept_panels.push(tracked);
+        }
+    }
+
+    let cascade_index = if cursor.is_none() {
+        kept_panels.len()
+    } else {
+        0
+    };
+    let (display_id, bounds) = resolve_panel_placement(cursor, cascade_index, cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         display_id,
@@ -535,34 +726,40 @@ fn open_floating_panel(
     };
 
     let panel_pinned = Arc::clone(&pinned);
-    match open_floating_window(
+    let opened = open_floating_window(
         options,
         crate::ui::panel::palette::SURFACE_BG,
         cx,
         |rounded, window, cx| {
             cx.new(|cx| {
                 FloatingPanel::new(
-                    initial_raw,
+                    init_content,
                     panel_pinned,
                     rounded,
                     hook_control,
                     dismiss_watch,
+                    draft_store,
+                    new_panel_tx,
                     window,
                     cx,
                 )
             })
         },
-    ) {
+    );
+
+    match opened {
         Ok((handle, _panel)) => {
-            cx.global_mut::<AppRuntime>().active_panel = Some(TrackedWindow {
+            kept_panels.push(TrackedWindow {
                 handle,
                 opened_at: Instant::now(),
                 dismiss_on_outside_click: true,
                 pinned,
             });
+            cx.global_mut::<AppRuntime>().active_panels = kept_panels;
             cx.activate(true);
         }
         Err(err) => {
+            cx.global_mut::<AppRuntime>().active_panels = kept_panels;
             error!("Failed to open floating JSON panel: {err:?}");
         }
     }
@@ -620,4 +817,73 @@ fn open_floating_window<V: Render>(
         window.into(),
         built.expect("open_floating_window ran its build closure"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use json_engine::SourceFormat;
+
+    #[test]
+    fn restores_draft_when_clipboard_sequence_is_unchanged() {
+        let store: SharedDraftStore = Arc::new(Mutex::new(Some(PanelDraftSnapshot {
+            text: r#"{"edited": true}"#.to_string(),
+            source_format: SourceFormat::Json5,
+            clipboard_seq: Some(42),
+        })));
+
+        match resolve_open_editor_content_inner(
+            Some(r#"{"original": 1}"#.to_string()),
+            false,
+            &store,
+            Some(42),
+        ) {
+            PanelInitContent::RestoredDraft {
+                text,
+                source_format,
+            } => {
+                assert_eq!(text, r#"{"edited": true}"#);
+                assert_eq!(source_format, SourceFormat::Json5);
+            }
+            other => panic!("expected RestoredDraft, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn loads_new_clipboard_when_sequence_changes() {
+        let store: SharedDraftStore = Arc::new(Mutex::new(Some(PanelDraftSnapshot {
+            text: r#"{"edited": true}"#.to_string(),
+            source_format: SourceFormat::Json,
+            clipboard_seq: Some(42),
+        })));
+
+        match resolve_open_editor_content_inner(
+            Some(r#"{"fresh": 2}"#.to_string()),
+            false,
+            &store,
+            Some(43),
+        ) {
+            PanelInitContent::Raw(Some(text)) => assert_eq!(text, r#"{"fresh": 2}"#),
+            other => panic!("expected Raw(Some), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_selection_takes_priority_over_saved_draft() {
+        let store: SharedDraftStore = Arc::new(Mutex::new(Some(PanelDraftSnapshot {
+            text: r#"{"edited": true}"#.to_string(),
+            source_format: SourceFormat::Json,
+            clipboard_seq: Some(42),
+        })));
+
+        match resolve_open_editor_content_inner(
+            Some(r#"{"selected": 99}"#.to_string()),
+            true,
+            &store,
+            Some(42),
+        ) {
+            PanelInitContent::Raw(Some(text)) => assert_eq!(text, r#"{"selected": 99}"#),
+            other => panic!("expected Raw(Some), got {other:?}"),
+        }
+    }
 }
