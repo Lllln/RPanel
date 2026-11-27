@@ -1,10 +1,14 @@
 //! Smart JSON conversion, formatting, escaping, and real-time validation engine.
 
+pub mod inspector;
 pub mod parsers;
 pub mod pipeline;
 pub mod timestamp;
 pub mod validate;
 
+pub use inspector::{
+    InsightKind, InsightTone, SmartInsight, detect_insight_in_editor, detect_smart_insight,
+};
 pub use pipeline::{ConvertResult, SourceFormat, convert_to_json};
 pub use timestamp::{
     ParsedTimestamp, TimestampUnit, detect_timestamp_in_editor, parse_timestamp,

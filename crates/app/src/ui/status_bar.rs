@@ -12,6 +12,7 @@ pub fn render_status_bar(
     status: &ValidationStatus,
     line_count: usize,
     char_count: usize,
+    pinned: bool,
     bottom_corner_radius: Pixels,
     on_jump_error: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -42,9 +43,17 @@ pub fn render_status_bar(
     };
 
     #[cfg(target_os = "macos")]
-    let shortcut_hint = "⌘+Enter 复制 · Esc 关闭";
+    let shortcut_hint = if pinned {
+        "已固定 · ⌘+Enter 复制 · ⌘P 取消固定"
+    } else {
+        "⌘+Enter 复制 · ⌘P 固定 · Esc 关闭"
+    };
     #[cfg(not(target_os = "macos"))]
-    let shortcut_hint = "Ctrl+Enter 复制 · Esc 关闭";
+    let shortcut_hint = if pinned {
+        "已固定 · Ctrl+Enter 复制 · Ctrl+P 取消固定"
+    } else {
+        "Ctrl+Enter 复制 · Ctrl+P 固定 · Esc 关闭"
+    };
 
     let status_pill = div()
         .id("status-validation-pill")

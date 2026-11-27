@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use json_engine::{ParsedTimestamp, SourceFormat, ValidationStatus};
+use json_engine::{SmartInsight, SourceFormat, ValidationStatus};
 
 /// Severity of transient user feedback shown in the floating JSON panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +39,7 @@ pub struct PanelDocumentState {
     pub validation: ValidationStatus,
     pub line_count: usize,
     pub char_count: usize,
-    pub detected_timestamp: Option<ParsedTimestamp>,
+    pub detected_insight: Option<SmartInsight>,
     pub feedback: Option<PanelFeedback>,
 }
 
@@ -52,13 +52,13 @@ impl PanelDocumentState {
             text.lines().count().max(1)
         };
         let char_count = text.chars().count();
-        let detected_timestamp = json_engine::detect_timestamp_in_editor(text);
+        let detected_insight = json_engine::detect_insight_in_editor(text);
         Self {
             source_format,
             validation,
             line_count,
             char_count,
-            detected_timestamp,
+            detected_insight,
             feedback: None,
         }
     }
@@ -71,7 +71,7 @@ impl PanelDocumentState {
             text.lines().count().max(1)
         };
         self.char_count = text.chars().count();
-        self.detected_timestamp = json_engine::detect_timestamp_in_editor(text);
+        self.detected_insight = json_engine::detect_insight_in_editor(text);
     }
 }
 

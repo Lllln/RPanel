@@ -9,7 +9,10 @@ use std::backtrace::Backtrace;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{Sender, unbounded};
@@ -34,11 +37,12 @@ use crate::ui::quick_menu::{
     OpenEditorRequest, QuickActionMenu, register_quick_menu_keybindings,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct TrackedWindow {
     handle: AnyWindowHandle,
     opened_at: Instant,
     dismiss_on_outside_click: bool,
+    pinned: Arc<AtomicBool>,
 }
 
 struct AppRuntime {
@@ -57,18 +61,23 @@ impl Global for AppRuntime {}
 struct LaunchArgs {
     preview: bool,
     preview_menu: bool,
+    preview_text: Option<String>,
     hold_ms: u64,
 }
 
 fn parse_args() -> LaunchArgs {
     let mut preview = false;
     let mut preview_menu = false;
+    let mut preview_text = None;
     let mut hold_ms = 300u64;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--preview" => preview = true,
             "--preview-menu" => preview_menu = true,
+            "--preview-text" => {
+                preview_text = args.next();
+            }
             "--hold-ms" => {
                 if let Some(val) = args.next().and_then(|v| v.parse::<u64>().ok()) {
                     hold_ms = val.max(100);
@@ -80,6 +89,7 @@ fn parse_args() -> LaunchArgs {
     LaunchArgs {
         preview,
         preview_menu,
+        preview_text,
         hold_ms,
     }
 }
@@ -199,19 +209,21 @@ fn main() {
             });
 
             if args.preview_menu {
-                open_quick_menu(
-                    None,
-                    Some(r#"{"app":"RPanel","mode":"quick-menu"}"#.to_string()),
-                    cx,
-                );
+                let text = args
+                    .preview_text
+                    .unwrap_or_else(|| r#"{"app":"RPanel","mode":"quick-menu"}"#.to_string());
+                open_quick_menu(None, Some(text), cx);
             } else if args.preview {
-                let sample = r#"{
+                let sample = args.preview_text.unwrap_or_else(|| {
+                    r#"{
   "app": "RPanel",
   "engine": "GPUI + gpui-component",
-  "features": ["Right-Click Hold", "Smart JSONify", "Pure-Rust JSON Highlight"],
+  "features": ["Right-Click Hold", "Smart JSONify", "Geek Smart Cards", "Pin Floating Panel"],
   "ready": true
-}"#;
-                open_floating_panel(Some(sample.to_string()), None, false, cx);
+}"#
+                    .to_string()
+                });
+                open_floating_panel(Some(sample), None, false, cx);
             }
 
             // Poll tray, quick-menu, and input-hook channels on a lightweight 16ms cadence.
@@ -338,15 +350,16 @@ fn handle_hook_event(event: HookEvent, cx: &mut App) {
 fn handle_global_mouse_down(position: ScreenPoint, at: Instant, cx: &mut App) {
     let (menu, panel) = {
         let runtime = cx.global::<AppRuntime>();
-        (runtime.active_menu, runtime.active_panel)
+        (runtime.active_menu.clone(), runtime.active_panel.clone())
     };
 
     if let Some(tracked) = menu
-        && should_clear_after_outside_click(tracked, position, at, cx)
+        && should_clear_after_outside_click(&tracked, position, at, cx)
     {
         let runtime = cx.global_mut::<AppRuntime>();
         if runtime
             .active_menu
+            .as_ref()
             .is_some_and(|current| current.handle == tracked.handle)
         {
             runtime.active_menu = None;
@@ -354,11 +367,12 @@ fn handle_global_mouse_down(position: ScreenPoint, at: Instant, cx: &mut App) {
     }
 
     if let Some(tracked) = panel
-        && should_clear_after_outside_click(tracked, position, at, cx)
+        && should_clear_after_outside_click(&tracked, position, at, cx)
     {
         let runtime = cx.global_mut::<AppRuntime>();
         if runtime
             .active_panel
+            .as_ref()
             .is_some_and(|current| current.handle == tracked.handle)
         {
             runtime.active_panel = None;
@@ -370,12 +384,15 @@ fn handle_global_mouse_down(position: ScreenPoint, at: Instant, cx: &mut App) {
 /// Closes the window if the click occurred after it opened and lies outside its OS bounds.
 /// Returns `true` when the tracked slot should be cleared (dismissed or already closed).
 fn should_clear_after_outside_click(
-    tracked: TrackedWindow,
+    tracked: &TrackedWindow,
     position: ScreenPoint,
     at: Instant,
     cx: &mut App,
 ) -> bool {
-    if !tracked.dismiss_on_outside_click || at <= tracked.opened_at {
+    if !tracked.dismiss_on_outside_click
+        || tracked.pinned.load(Ordering::Acquire)
+        || at <= tracked.opened_at
+    {
         return false;
     }
 
@@ -419,9 +436,11 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
     };
     dismiss_window(prev_menu, cx);
 
-    let parsed_timestamp = captured_text.as_deref().and_then(json_engine::parse_timestamp);
+    let smart_insight = captured_text
+        .as_deref()
+        .and_then(json_engine::detect_smart_insight);
     let (display_id, bounds) =
-        resolve_quick_menu_placement(cursor, parsed_timestamp.is_some(), cx);
+        resolve_quick_menu_placement(cursor, smart_insight.is_some(), cx);
 
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -446,7 +465,7 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
                 QuickActionMenu::new(
                     cursor,
                     captured_text,
-                    parsed_timestamp,
+                    smart_insight,
                     open_editor_tx,
                     rounded,
                     dismiss_watch,
@@ -461,6 +480,7 @@ fn open_quick_menu(cursor: Option<ScreenPoint>, captured_text: Option<String>, c
                 handle,
                 opened_at: Instant::now(),
                 dismiss_on_outside_click: true,
+                pinned: Arc::new(AtomicBool::new(false)),
             });
             cx.activate(true);
         }
@@ -476,19 +496,20 @@ fn open_floating_panel(
     auto_hide_on_blur: bool,
     cx: &mut App,
 ) {
-    let (prev_menu, prev_panel, dismiss_watch) = {
+    let initial_pinned = !auto_hide_on_blur;
+    let pinned = Arc::new(AtomicBool::new(initial_pinned));
+
+    let (prev_menu, prev_panel, hook_control, dismiss_watch) = {
         let runtime = cx.global_mut::<AppRuntime>();
         let prev_menu = runtime.active_menu.take();
         let prev_panel = runtime.active_panel.take();
-        let watch = if auto_hide_on_blur {
-            runtime
-                .hook_control
-                .as_ref()
-                .map(|ctrl| ctrl.acquire_dismiss_watch())
+        let hook_control = runtime.hook_control.clone();
+        let watch = if !initial_pinned {
+            hook_control.as_ref().map(|ctrl| ctrl.acquire_dismiss_watch())
         } else {
             None
         };
-        (prev_menu, prev_panel, watch)
+        (prev_menu, prev_panel, hook_control, watch)
     };
     dismiss_window(prev_menu, cx);
     dismiss_window(prev_panel, cx);
@@ -508,6 +529,7 @@ fn open_floating_panel(
         ..Default::default()
     };
 
+    let panel_pinned = Arc::clone(&pinned);
     match open_floating_window(
         options,
         crate::ui::panel::palette::SURFACE_BG,
@@ -516,8 +538,9 @@ fn open_floating_panel(
             cx.new(|cx| {
                 FloatingPanel::new(
                     initial_raw,
-                    auto_hide_on_blur,
+                    panel_pinned,
                     rounded,
+                    hook_control,
                     dismiss_watch,
                     window,
                     cx,
@@ -529,7 +552,8 @@ fn open_floating_panel(
             cx.global_mut::<AppRuntime>().active_panel = Some(TrackedWindow {
                 handle,
                 opened_at: Instant::now(),
-                dismiss_on_outside_click: auto_hide_on_blur,
+                dismiss_on_outside_click: true,
+                pinned,
             });
             cx.activate(true);
         }

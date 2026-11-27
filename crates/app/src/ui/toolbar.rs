@@ -17,6 +17,7 @@ pub struct ToolbarCallbacks {
     pub on_unescape: ClickHandler,
     pub on_reload: ClickHandler,
     pub on_copy_hide: ClickHandler,
+    pub on_toggle_pin: ClickHandler,
     pub on_close: ClickHandler,
 }
 
@@ -36,6 +37,7 @@ fn source_format_label(format: SourceFormat) -> &'static str {
 pub fn render_toolbar(
     source_format: SourceFormat,
     info_feedback: Option<&str>,
+    pinned: bool,
     top_corner_radius: Pixels,
     callbacks: ToolbarCallbacks,
     cx: &App,
@@ -52,18 +54,49 @@ pub fn render_toolbar(
         .hover(rgb(palette::HOVER_BG).into())
         .active(rgb(palette::ACTIVE_BG).into());
 
+    let apple_pinned = ButtonCustomVariant::new(cx)
+        .color(rgb(palette::ACCENT_TINT).into())
+        .foreground(rgb(palette::ACCENT).into())
+        .hover(rgb(palette::ACCENT_BORDER).into())
+        .active(rgb(palette::ACCENT_BORDER).into());
+
     #[cfg(target_os = "macos")]
-    let (tip_pretty, tip_minify, tip_copy) = (
+    let (tip_pretty, tip_minify, tip_copy, tip_pin) = (
         "格式化 JSON (⌘E)",
         "压缩为单行 JSON (⌘M)",
-        "复制 JSON 并关闭面板 (⌘↵)",
+        if pinned {
+            "复制 JSON (⌘↵ · 面板已固定)"
+        } else {
+            "复制 JSON 并关闭面板 (⌘↵)"
+        },
+        if pinned {
+            "已固定，防止误触关闭 · 点击取消 (⌘P)"
+        } else {
+            "固定面板，防止点击外部或按 Esc 误关 (⌘P)"
+        },
     );
     #[cfg(not(target_os = "macos"))]
-    let (tip_pretty, tip_minify, tip_copy) = (
+    let (tip_pretty, tip_minify, tip_copy, tip_pin) = (
         "格式化 JSON (Ctrl+E)",
         "压缩为单行 JSON (Ctrl+M)",
-        "复制 JSON 并关闭面板 (Ctrl+Enter)",
+        if pinned {
+            "复制 JSON (Ctrl+Enter · 面板已固定)"
+        } else {
+            "复制 JSON 并关闭面板 (Ctrl+Enter)"
+        },
+        if pinned {
+            "已固定，防止误触关闭 · 点击取消 (Ctrl+P)"
+        } else {
+            "固定面板，防止点击外部或按 Esc 误关 (Ctrl+P)"
+        },
     );
+
+    let pin_button = Button::new("btn-pin")
+        .custom(if pinned { apple_pinned } else { apple_subtle })
+        .xsmall()
+        .label(if pinned { "已固定" } else { "固定" })
+        .tooltip(tip_pin)
+        .on_click(callbacks.on_toggle_pin);
 
     div()
         .flex()
@@ -185,12 +218,13 @@ pub fn render_toolbar(
                         .tooltip(tip_copy)
                         .on_click(callbacks.on_copy_hide),
                 )
+                .child(pin_button)
                 .child(
                     Button::new("btn-close")
                         .custom(apple_subtle)
                         .xsmall()
                         .label("×")
-                        .tooltip("关闭面板 (Esc)")
+                        .tooltip("关闭面板")
                         .on_click(callbacks.on_close),
                 ),
         )

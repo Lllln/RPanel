@@ -8,13 +8,13 @@ use gpui_kit::{
     px, rgb,
 };
 use input_hook::{DismissWatchGuard, ScreenPoint};
-use json_engine::ParsedTimestamp;
+use json_engine::SmartInsight;
 
 use crate::ui::panel::palette;
 
 actions!(
     rpanel_menu,
-    [DismissQuickMenu, ConfirmQuickMenu, CopyQuickTimestamp]
+    [DismissQuickMenu, ConfirmQuickMenu, CopyQuickInsight]
 );
 
 pub fn register_quick_menu_keybindings(cx: &mut App) {
@@ -22,9 +22,9 @@ pub fn register_quick_menu_keybindings(cx: &mut App) {
         KeyBinding::new("escape", DismissQuickMenu, Some("RPanelQuickMenu")),
         KeyBinding::new("enter", ConfirmQuickMenu, Some("RPanelQuickMenu")),
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-c", CopyQuickTimestamp, Some("RPanelQuickMenu")),
+        KeyBinding::new("cmd-c", CopyQuickInsight, Some("RPanelQuickMenu")),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-c", CopyQuickTimestamp, Some("RPanelQuickMenu")),
+        KeyBinding::new("ctrl-c", CopyQuickInsight, Some("RPanelQuickMenu")),
     ]);
 }
 
@@ -38,12 +38,13 @@ pub struct OpenEditorRequest {
 const MENU_BLUR_GRACE: Duration = Duration::from_millis(260);
 
 /// Minimal Apple-style floating quick-action menu near the cursor.
-/// Automatically shows a direct local date-time conversion row when the selection is a timestamp.
+/// Automatically surfaces a direct geek-oriented smart insight card (timestamp, date, JWT,
+/// color, CIDR, Cron, radix, Unicode/URL/Base64) when the selection matches a known pattern.
 pub struct QuickActionMenu {
     focus_handle: FocusHandle,
     cursor: Option<ScreenPoint>,
     captured_text: Option<String>,
-    parsed_timestamp: Option<ParsedTimestamp>,
+    smart_insight: Option<SmartInsight>,
     open_editor_tx: Sender<OpenEditorRequest>,
     rounded: bool,
     opened_at: Instant,
@@ -57,7 +58,7 @@ impl QuickActionMenu {
     pub fn new(
         cursor: Option<ScreenPoint>,
         captured_text: Option<String>,
-        parsed_timestamp: Option<ParsedTimestamp>,
+        smart_insight: Option<SmartInsight>,
         open_editor_tx: Sender<OpenEditorRequest>,
         rounded: bool,
         dismiss_watch: Option<DismissWatchGuard>,
@@ -80,7 +81,7 @@ impl QuickActionMenu {
             focus_handle,
             cursor,
             captured_text,
-            parsed_timestamp,
+            smart_insight,
             open_editor_tx,
             rounded,
             opened_at: Instant::now(),
@@ -91,16 +92,21 @@ impl QuickActionMenu {
     }
 
     fn trigger_open_editor(&mut self, window: &mut Window) {
+        let editor_payload = self
+            .smart_insight
+            .as_mut()
+            .and_then(|insight| insight.editor_json.take())
+            .or_else(|| self.captured_text.take());
         let _ = self.open_editor_tx.send(OpenEditorRequest {
             cursor: self.cursor,
-            captured_text: self.captured_text.take(),
+            captured_text: editor_payload,
         });
         window.remove_window();
     }
 
-    fn copy_timestamp_and_dismiss(&mut self, window: &mut Window) {
-        if let Some(ts) = &self.parsed_timestamp {
-            let _ = input_hook::clipboard::write_clipboard_text(&ts.local_datetime);
+    fn copy_insight_and_dismiss(&mut self, window: &mut Window) {
+        if let Some(insight) = &self.smart_insight {
+            let _ = input_hook::clipboard::write_clipboard_text(&insight.copy_text);
             window.remove_window();
         }
     }
@@ -118,6 +124,10 @@ impl Render for QuickActionMenu {
             .captured_text
             .as_deref()
             .is_some_and(|s| !s.trim().is_empty());
+        let has_decoded_json = self
+            .smart_insight
+            .as_ref()
+            .is_some_and(|insight| insight.editor_json.is_some());
 
         let container = div()
             .key_context("RPanelQuickMenu")
@@ -128,8 +138,8 @@ impl Render for QuickActionMenu {
             .on_action(cx.listener(|this, _: &ConfirmQuickMenu, window, _| {
                 this.trigger_open_editor(window);
             }))
-            .on_action(cx.listener(|this, _: &CopyQuickTimestamp, window, _| {
-                this.copy_timestamp_and_dismiss(window);
+            .on_action(cx.listener(|this, _: &CopyQuickInsight, window, _| {
+                this.copy_insight_and_dismiss(window);
             }))
             .size_full()
             .bg(rgb(palette::CARD_BG))
@@ -148,10 +158,13 @@ impl Render for QuickActionMenu {
             container
         };
 
-        let timestamp_section = self.parsed_timestamp.as_ref().map(|ts| {
-            let datetime = ts.local_datetime.clone();
-            let subtitle = format!("本地时间 ({}) · 点击复制", ts.timezone_label);
-            let unit_label = ts.unit.label_zh();
+        let insight_section = self.smart_insight.as_ref().map(|insight| {
+            let (tint_bg, _border, accent_fg) = palette::insight_colors(insight.tone);
+            let badge = insight.badge.clone();
+            let primary = insight.primary.clone();
+            let subtitle = insight.subtitle.clone();
+            let pill = insight.pill.clone();
+            let swatch = insight.color_swatch;
 
             div()
                 .flex()
@@ -160,7 +173,7 @@ impl Render for QuickActionMenu {
                 .gap(px(4.0))
                 .child(
                     div()
-                        .id("quick-menu-copy-timestamp")
+                        .id("quick-menu-copy-insight")
                         .flex()
                         .items_center()
                         .justify_between()
@@ -173,7 +186,7 @@ impl Render for QuickActionMenu {
                         .hover(|style| style.bg(rgb(palette::SURFACE_BG)))
                         .active(|style| style.bg(rgb(palette::ACTIVE_BG)))
                         .on_click(cx.listener(|this, _, window, _| {
-                            this.copy_timestamp_and_dismiss(window);
+                            this.copy_insight_and_dismiss(window);
                         }))
                         .child(
                             div()
@@ -182,17 +195,26 @@ impl Render for QuickActionMenu {
                                 .gap(px(8.0))
                                 .min_w_0()
                                 .flex_1()
+                                .children(swatch.map(|color_hex| {
+                                    div()
+                                        .flex_shrink_0()
+                                        .size(px(16.0))
+                                        .rounded(px(4.0))
+                                        .bg(rgb(color_hex))
+                                        .border_1()
+                                        .border_color(rgb(palette::BORDER_OUTER))
+                                }))
                                 .child(
                                     div()
                                         .flex_shrink_0()
                                         .px(px(5.0))
                                         .py(px(2.0))
                                         .rounded(px(5.0))
-                                        .bg(rgb(palette::TS_TINT))
+                                        .bg(rgb(tint_bg))
                                         .text_xs()
                                         .font_semibold()
-                                        .text_color(rgb(palette::TS_ACCENT))
-                                        .child("时间"),
+                                        .text_color(rgb(accent_fg))
+                                        .child(badge),
                                 )
                                 .child(
                                     div()
@@ -207,7 +229,7 @@ impl Render for QuickActionMenu {
                                                 .text_color(rgb(palette::INK_PRIMARY))
                                                 .whitespace_nowrap()
                                                 .truncate()
-                                                .child(datetime),
+                                                .child(primary),
                                         )
                                         .child(
                                             div()
@@ -228,7 +250,7 @@ impl Render for QuickActionMenu {
                                 .bg(rgb(palette::PILL_BG))
                                 .text_xs()
                                 .text_color(rgb(palette::INK_SECONDARY))
-                                .child(unit_label),
+                                .child(pill),
                         ),
                 )
                 .child(
@@ -239,6 +261,12 @@ impl Render for QuickActionMenu {
                         .bg(rgb(palette::BORDER_SUBTLE)),
                 )
         });
+
+        let json_label = if has_decoded_json {
+            "查看解码 JSON"
+        } else {
+            "查看 JSON"
+        };
 
         let view_json_row = div()
             .id("quick-menu-view-json")
@@ -276,7 +304,7 @@ impl Render for QuickActionMenu {
                             .text_sm()
                             .font_medium()
                             .text_color(rgb(palette::INK_PRIMARY))
-                            .child("查看 JSON"),
+                            .child(json_label),
                     ),
             )
             .children(has_selection.then(|| {
@@ -286,6 +314,6 @@ impl Render for QuickActionMenu {
                     .bg(rgb(palette::STATUS_OK))
             }));
 
-        container.children(timestamp_section).child(view_json_row)
+        container.children(insight_section).child(view_json_row)
     }
 }

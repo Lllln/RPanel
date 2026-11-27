@@ -1,3 +1,7 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::StyledExt;
@@ -7,8 +11,8 @@ use gpui_kit::{
     ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, Window, actions, div,
     px, rgb,
 };
-use input_hook::DismissWatchGuard;
-use json_engine::{SourceFormat, ValidationStatus};
+use input_hook::{DismissWatchGuard, HookControl};
+use json_engine::{InsightKind, SourceFormat, ValidationStatus};
 
 use crate::state::{FeedbackKind, PanelDocumentState, PanelFeedback};
 use crate::ui::editor::{
@@ -25,6 +29,7 @@ actions!(
         CopyAndHide,
         FormatPrettyAction,
         FormatMinifyAction,
+        TogglePinAction,
     ]
 );
 
@@ -44,11 +49,17 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-m", FormatMinifyAction, Some("RPanel")),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-m", FormatMinifyAction, Some("RPanel")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-p", TogglePinAction, Some("RPanel")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-p", TogglePinAction, Some("RPanel")),
     ]);
 }
 
 /// Restrained Apple-inspired light surface palette.
 pub mod palette {
+    use json_engine::InsightTone;
+
     pub const SURFACE_BG: u32 = 0xF5F5F7;
     pub const HEADER_BG: u32 = 0xFBFBFD;
     pub const CARD_BG: u32 = 0xFFFFFF;
@@ -65,6 +76,7 @@ pub mod palette {
     pub const ACCENT_HOVER: u32 = 0x006AE0;
     pub const ACCENT_ACTIVE: u32 = 0x005EC4;
     pub const ACCENT_TINT: u32 = 0xE8F2FF;
+    pub const ACCENT_BORDER: u32 = 0xC6DFFF;
     pub const STATUS_OK: u32 = 0x34C759;
     pub const STATUS_ERR: u32 = 0xFF3B30;
     pub const STATUS_MUTED: u32 = 0xAEAEB2;
@@ -74,6 +86,23 @@ pub mod palette {
     pub const TS_TINT: u32 = 0xEBF9EE;
     pub const TS_BORDER: u32 = 0xCBEFD3;
     pub const TS_ACCENT: u32 = 0x1D8F3A;
+    pub const PURPLE_TINT: u32 = 0xF4EEFF;
+    pub const PURPLE_BORDER: u32 = 0xDFCEFF;
+    pub const PURPLE_ACCENT: u32 = 0x6E40C9;
+    pub const AMBER_TINT: u32 = 0xFFF7E6;
+    pub const AMBER_BORDER: u32 = 0xFBE0A6;
+    pub const AMBER_ACCENT: u32 = 0xB25E00;
+
+    /// Returns `(tint_bg, border, accent_fg)` for a given [`InsightTone`].
+    pub const fn insight_colors(tone: InsightTone) -> (u32, u32, u32) {
+        match tone {
+            InsightTone::Green => (TS_TINT, TS_BORDER, TS_ACCENT),
+            InsightTone::Blue => (ACCENT_TINT, ACCENT_BORDER, ACCENT),
+            InsightTone::Purple => (PURPLE_TINT, PURPLE_BORDER, PURPLE_ACCENT),
+            InsightTone::Amber => (AMBER_TINT, AMBER_BORDER, AMBER_ACCENT),
+            InsightTone::Neutral => (PILL_BG, BORDER_SUBTLE, INK_PRIMARY),
+        }
+    }
 }
 
 /// Grace period after opening before window deactivation triggers auto-hide.
@@ -87,16 +116,19 @@ pub struct FloatingPanel {
     rounded: bool,
     opened_at: Instant,
     ever_activated: bool,
-    auto_hide_on_blur: bool,
-    _dismiss_watch: Option<DismissWatchGuard>,
+    pinned: Arc<AtomicBool>,
+    hook_control: Option<Arc<HookControl>>,
+    dismiss_watch: Option<DismissWatchGuard>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl FloatingPanel {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         initial_raw: Option<String>,
-        auto_hide_on_blur: bool,
+        pinned: Arc<AtomicBool>,
         rounded: bool,
+        hook_control: Option<Arc<HookControl>>,
         dismiss_watch: Option<DismissWatchGuard>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -141,7 +173,7 @@ impl FloatingPanel {
         let activation_sub = cx.observe_window_activation(window, |this, window, _cx| {
             if window.is_window_active() {
                 this.ever_activated = true;
-            } else if this.auto_hide_on_blur
+            } else if !this.is_pinned()
                 && (this.ever_activated || this.opened_at.elapsed() >= FOCUS_LOSS_GRACE)
             {
                 window.remove_window();
@@ -156,10 +188,47 @@ impl FloatingPanel {
             rounded,
             opened_at: Instant::now(),
             ever_activated,
-            auto_hide_on_blur,
-            _dismiss_watch: dismiss_watch,
+            pinned,
+            hook_control,
+            dismiss_watch,
             _subscriptions: vec![editor_sub, activation_sub],
         }
+    }
+
+    fn is_pinned(&self) -> bool {
+        self.pinned.load(Ordering::Acquire)
+    }
+
+    fn toggle_pin(&mut self, cx: &mut Context<Self>) {
+        let next = !self.is_pinned();
+        self.pinned.store(next, Ordering::Release);
+        if next {
+            // Pause global mouse-down watch while pinned so outside clicks never dismiss the panel.
+            self.dismiss_watch = None;
+            self.doc.feedback = Some(PanelFeedback::info("已固定"));
+        } else {
+            if self.dismiss_watch.is_none() {
+                self.dismiss_watch = self
+                    .hook_control
+                    .as_ref()
+                    .map(|ctrl| ctrl.acquire_dismiss_watch());
+            }
+            self.doc.feedback = Some(PanelFeedback::info("已取消固定"));
+        }
+        cx.notify();
+    }
+
+    fn handle_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_pinned() {
+            #[cfg(target_os = "macos")]
+            let msg = "已固定 · 按 ⌘P 取消或点击 ×";
+            #[cfg(not(target_os = "macos"))]
+            let msg = "已固定 · 按 Ctrl+P 取消或点击 ×";
+            self.doc.feedback = Some(PanelFeedback::info(msg));
+            cx.notify();
+            return;
+        }
+        window.remove_window();
     }
 
     fn current_text(&self, cx: &App) -> String {
@@ -256,19 +325,29 @@ impl FloatingPanel {
             self.set_error_feedback(format!("复制失败：{err}"), cx);
             return;
         }
+        if self.is_pinned() {
+            self.doc.feedback = Some(PanelFeedback::info("已复制"));
+            cx.notify();
+            return;
+        }
         window.remove_window();
     }
 
-    fn copy_detected_timestamp(&mut self, cx: &mut Context<Self>) {
-        let Some(ts) = &self.doc.detected_timestamp else {
+    fn copy_detected_insight(&mut self, cx: &mut Context<Self>) {
+        let Some(insight) = &self.doc.detected_insight else {
             return;
         };
-        let formatted = ts.local_datetime.clone();
-        if let Err(err) = input_hook::clipboard::write_clipboard_text(&formatted) {
-            self.set_error_feedback(format!("复制时间失败：{err}"), cx);
+        let copy_text = insight.copy_text.clone();
+        let feedback = if insight.kind == InsightKind::Timestamp {
+            "已复制时间"
+        } else {
+            "已复制识别结果"
+        };
+        if let Err(err) = input_hook::clipboard::write_clipboard_text(&copy_text) {
+            self.set_error_feedback(format!("复制失败：{err}"), cx);
             return;
         }
-        self.doc.feedback = Some(PanelFeedback::info("已复制时间"));
+        self.doc.feedback = Some(PanelFeedback::info(feedback));
         cx.notify();
     }
 
@@ -293,6 +372,7 @@ impl Focusable for FloatingPanel {
 
 impl Render for FloatingPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pinned = self.is_pinned();
         let callbacks = ToolbarCallbacks {
             on_pretty: Box::new(cx.listener(|this, _, window, cx| this.apply_pretty(window, cx))),
             on_minify: Box::new(cx.listener(|this, _, window, cx| this.apply_minify(window, cx))),
@@ -306,6 +386,7 @@ impl Render for FloatingPanel {
             on_copy_hide: Box::new(
                 cx.listener(|this, _, window, cx| this.copy_and_hide(window, cx)),
             ),
+            on_toggle_pin: Box::new(cx.listener(|this, _, _, cx| this.toggle_pin(cx))),
             on_close: Box::new(cx.listener(|_, _, window, _| {
                 window.remove_window();
             })),
@@ -316,8 +397,8 @@ impl Render for FloatingPanel {
         let shell = div()
             .key_context("RPanel")
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|_, _: &HidePanel, window, _| {
-                window.remove_window();
+            .on_action(cx.listener(|this, _: &HidePanel, window, cx| {
+                this.handle_escape(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CopyAndHide, window, cx| {
                 this.copy_and_hide(window, cx);
@@ -327,6 +408,9 @@ impl Render for FloatingPanel {
             }))
             .on_action(cx.listener(|this, _: &FormatMinifyAction, window, cx| {
                 this.apply_minify(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &TogglePinAction, _, cx| {
+                this.toggle_pin(cx);
             }))
             .flex()
             .flex_col()
@@ -422,12 +506,18 @@ impl Render for FloatingPanel {
                 )
         });
 
-        let on_copy_timestamp =
-            cx.listener(|this, _, _, cx| this.copy_detected_timestamp(cx));
-        let timestamp_banner = self.doc.detected_timestamp.as_ref().map(|ts| {
-            let unit_label = ts.unit.label_zh();
-            let datetime = ts.local_datetime.clone();
-            let tz = ts.timezone_label.clone();
+        let on_copy_insight = cx.listener(|this, _, _, cx| this.copy_detected_insight(cx));
+        let insight_banner = self.doc.detected_insight.as_ref().map(|insight| {
+            let (tint_bg, border, accent_fg) = palette::insight_colors(insight.tone);
+            let badge = insight.badge.clone();
+            let pill = insight.pill.clone();
+            let primary = insight.primary.clone();
+            let swatch = insight.color_swatch;
+            let copy_label = if insight.kind == InsightKind::Timestamp {
+                "复制时间"
+            } else {
+                "复制结果"
+            };
 
             div()
                 .flex()
@@ -436,9 +526,9 @@ impl Render for FloatingPanel {
                 .gap(px(8.0))
                 .px(px(14.0))
                 .py(px(6.0))
-                .bg(rgb(palette::TS_TINT))
+                .bg(rgb(tint_bg))
                 .border_b_1()
-                .border_color(rgb(palette::TS_BORDER))
+                .border_color(rgb(border))
                 .child(
                     div()
                         .flex()
@@ -446,53 +536,58 @@ impl Render for FloatingPanel {
                         .flex_1()
                         .min_w_0()
                         .gap(px(8.0))
-                        .child(
+                        .children(swatch.map(|color_hex| {
+                            div()
+                                .flex_shrink_0()
+                                .size(px(12.0))
+                                .rounded(px(3.0))
+                                .bg(rgb(color_hex))
+                                .border_1()
+                                .border_color(rgb(palette::BORDER_OUTER))
+                        }))
+                        .children(swatch.is_none().then(|| {
                             div()
                                 .flex_shrink_0()
                                 .size(px(6.0))
                                 .rounded_full()
-                                .bg(rgb(palette::STATUS_OK)),
-                        )
+                                .bg(rgb(accent_fg))
+                        }))
                         .child(
                             div()
                                 .flex_shrink_0()
                                 .text_xs()
-                                .text_color(rgb(palette::TS_ACCENT))
-                                .child(format!("时间戳 ({unit_label}) →")),
+                                .text_color(rgb(accent_fg))
+                                .child(format!("{badge} ({pill}) →")),
                         )
                         .child(
                             div()
+                                .min_w_0()
+                                .flex_1()
                                 .text_xs()
                                 .font_semibold()
                                 .text_color(rgb(palette::INK_PRIMARY))
                                 .whitespace_nowrap()
-                                .child(datetime),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(palette::INK_SECONDARY))
-                                .whitespace_nowrap()
-                                .child(format!("({tz})")),
+                                .truncate()
+                                .child(primary),
                         ),
                 )
                 .child(
                     div()
-                        .id("timestamp-banner-copy")
+                        .id("insight-banner-copy")
                         .flex_shrink_0()
                         .px(px(8.0))
                         .py(px(2.0))
                         .rounded(px(5.0))
                         .bg(rgb(palette::CARD_BG))
                         .border_1()
-                        .border_color(rgb(palette::TS_BORDER))
+                        .border_color(rgb(border))
                         .cursor_pointer()
                         .text_xs()
                         .font_medium()
-                        .text_color(rgb(palette::TS_ACCENT))
-                        .hover(|s| s.bg(rgb(palette::TS_BORDER)))
-                        .on_click(on_copy_timestamp)
-                        .child("复制时间"),
+                        .text_color(rgb(accent_fg))
+                        .hover(|s| s.bg(rgb(border)))
+                        .on_click(on_copy_insight)
+                        .child(copy_label),
                 )
         });
 
@@ -500,11 +595,12 @@ impl Render for FloatingPanel {
             .child(render_toolbar(
                 self.doc.source_format,
                 info_feedback,
+                pinned,
                 inner_radius,
                 callbacks,
                 cx,
             ))
-            .children(timestamp_banner)
+            .children(insight_banner)
             .children(error_banner)
             .child(
                 div()
@@ -526,6 +622,7 @@ impl Render for FloatingPanel {
                 &self.doc.validation,
                 self.doc.line_count,
                 self.doc.char_count,
+                pinned,
                 inner_radius,
                 on_jump_error,
             ))

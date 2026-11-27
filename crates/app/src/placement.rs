@@ -5,8 +5,8 @@ pub const PANEL_WIDTH: i32 = 680;
 pub const PANEL_HEIGHT: i32 = 480;
 pub const QUICK_MENU_WIDTH: i32 = 152;
 pub const QUICK_MENU_HEIGHT: i32 = 48;
-pub const QUICK_MENU_TIMESTAMP_WIDTH: i32 = 320;
-pub const QUICK_MENU_TIMESTAMP_HEIGHT: i32 = 112;
+pub const QUICK_MENU_INSIGHT_WIDTH: i32 = 348;
+pub const QUICK_MENU_INSIGHT_HEIGHT: i32 = 112;
 pub const EDGE_MARGIN: i32 = 16;
 
 /// Logical rectangle representing a monitor work area or floating panel.
@@ -29,11 +29,11 @@ pub fn resolve_panel_placement(
 /// Resolve the target display and clamped bounds for the compact right-click quick menu.
 pub fn resolve_quick_menu_placement(
     cursor: Option<ScreenPoint>,
-    has_timestamp: bool,
+    has_insight: bool,
     cx: &App,
 ) -> (Option<DisplayId>, Bounds<Pixels>) {
-    let (width, height) = if has_timestamp {
-        (QUICK_MENU_TIMESTAMP_WIDTH, QUICK_MENU_TIMESTAMP_HEIGHT)
+    let (width, height) = if has_insight {
+        (QUICK_MENU_INSIGHT_WIDTH, QUICK_MENU_INSIGHT_HEIGHT)
     } else {
         (QUICK_MENU_WIDTH, QUICK_MENU_HEIGHT)
     };
