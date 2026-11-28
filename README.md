@@ -1,78 +1,79 @@
-# RPanel (GPUI Edition)
+# RPanel
 
-RPanel 是一款纯 Rust 编写、支持 **Windows 与 macOS 双端** 的轻量级桌面效率工具：全局长按鼠标右键弹出悬浮面板，自动捕获当前选中文本并智能 JSON 化，提供 Tree-sitter 语法高亮、行号、实时校验与一键格式化/复制体验。
+纯 Rust + GPUI 编写的 **Windows / macOS** 轻量级桌面悬浮效率工具。常驻系统托盘，无 WebView 依赖，通过长按右键或全局快捷键随时唤出，自动识别选中文本并展示智能洞察卡片或结构化 JSON 编辑器。
 
-## 核心特性
+## 核心功能
 
-- **全局右键长按拦截（双端原生）**
-  - 按住右键超过阈值（默认 `300 ms`，可在托盘菜单切换 `250 / 300 / 450 / 600 ms`）且鼠标位移不超过 `8 px` 时，吞掉系统默认右键菜单并在光标附近弹出浮窗。
-  - 短按右键与右键拖拽自动补发原生事件，所有注入事件均携带 `RPANEL_INJECTED_TAG` 防递归标记，不影响正常操作。
-  - **Windows**：`SetWindowsHookExW(WH_MOUSE_LL)` 独立消息循环线程 + 多屏虚拟桌面归一化 `SendInput` 补发 + HiDPI 逻辑坐标换算。
-  - **macOS**：`CGEventTap` 拦截 + `TapDisabledByTimeout` 自动重启用 + `AXIsProcessTrustedWithOptions` 辅助功能权限检测与引导。
-- **自动取词与剪贴板保护**
-  - 通用路径：`arboard` 备份原剪贴板 → 模拟 `Ctrl+C` / `Cmd+C` → 读取选中文本 → 自动恢复原剪贴板。
-  - macOS 优先尝试通过 `AXUIElement` 无感读取选中文本，不支持时无缝回退至 `Cmd+C`。
-- **智能 JSON 化引擎（5 级启发式解析链）**
-  1. 标准 JSON / 宽松 JSON5（单引号、尾逗号、注释、无引号键名、Python 字典及双重转义 JSON 字符串解包）
-  2. 表格文本（TSV / CSV → JSON 对象数组，保留前导零编码）
-  3. 键值对 / HTTP Headers / `.env` / 类 YAML（支持重复键自动数组化）
-  4. URL / QueryString（支持完整 URL 与裸查询串、URL 解码与重复参数数组化）
-  5. 纯文本兜底（包装为可编辑的 `{"text": "..."}`）
-- **纯 Rust GPUI 悬浮面板与系统托盘**
-  - 基于 `gpui-kit`（`gpui` + `gpui-component`）构建无 WebView 的轻量原生界面，克制浅色 Apple 风格。
-  - 内置纯 Rust JSON 语法高亮器（无 `tree-sitter` C 库依赖，避免 Windows `ts_query_cursor_next_match` 崩溃）、行号、代码折叠、撤销栈保留的格式化/压缩/转义/去转义、内联错误下划线与点击状态栏跳转错误行列。
-  - 集成 `tray-icon` 系统托盘：从剪贴板打开、启用/暂停拦截、切换长按时长阈值、退出程序。
+- **多方式随时唤出**
+  - **右键长按**：任意应用中长按右键（默认 `300 ms`，托盘可切换 `250 / 300 / 450 / 600 ms`）在光标旁弹出快捷菜单；短按与拖拽原样放行。
+  - **全局快捷键**：`Ctrl+Alt+Space`（Windows）/ `⌃⌥Space`（macOS）；未选中文本时自动检测剪贴板或恢复上次编辑草稿。
+  - **自动取词与剪贴板保护**：优先无感读取选区，必要时安全备份并还原剪贴板；支持终端环境取词与单实例常驻运行。
+- **极客智能洞察卡片**
+  - 纯本地零网络识别常见开发文本，点击即可复制结果或一键展开为 JSON：
+  - Unix 时间戳 / 日期时间、JWT、色值（HEX / RGB）、IPv4 CIDR、Cron 表达式、进制数值、Unicode 转义、URL 编码、Base64 / Base64URL。
+- **智能 JSON 化与悬浮编辑器**
+  - **5 级启发式解析**：标准 JSON / 宽松 JSON5（单引号、尾逗号、注释、Python 字典及双重转义解包）、TSV / CSV 表格、键值对 / HTTP Headers / `.env`、URL / QueryString、纯文本兜底。
+  - **轻量原生编辑体验**：纯 Rust 语法高亮、行号、可视化折叠箭头与一键折叠/展开、格式化 / 压缩 / 转义 / 去转义、实时语法校验与错误行列定位。
+  - **置顶与多开对比**：支持固定（Pin）面板防止点击外部关闭，并可同时打开多个面板并排对比。
 
-## Workspace 架构
+## 快捷键
+
+| 场景 | Windows | macOS | 说明 |
+| --- | --- | --- | --- |
+| 全局 | `Ctrl+Alt+Space` | `⌃⌥Space` | 唤出面板（剪贴板 / 草稿恢复） |
+| 快捷菜单 | `Enter` / `Ctrl+C` / `Esc` | `Enter` / `⌘C` / `Esc` | 打开编辑器 / 复制洞察结果 / 关闭 |
+| 编辑器 | `Ctrl+Enter` | `⌘↵` | 复制并关闭（固定状态下仅复制） |
+| 编辑器 | `Ctrl+E` / `Ctrl+M` | `⌘E` / `⌘M` | 格式化 / 压缩为单行 |
+| 编辑器 | `Ctrl+Shift+[` / `]` | `⌘⌥[` / `]` | 折叠节点 / 全部展开 |
+| 编辑器 | `Ctrl+P` / `Ctrl+N` | `⌘P` / `⌘N` | 固定面板 / 新建对比面板 |
+| 编辑器 | `Esc` | `Esc` | 关闭面板（未固定时点击外部自动隐藏） |
+
+## 项目结构
 
 ```text
 RPanel/
-├── Cargo.toml               # Workspace 根配置
 ├── crates/
-│   ├── json-engine/         # 纯逻辑智能 JSON 化、格式化、转义与校验引擎
-│   ├── input-hook/          # 跨平台右键长按状态机、双端 Hook、取词与 hook-cli 调试入口
-│   └── app/                 # GPUI + gpui-component 悬浮编辑面板与系统托盘
+│   ├── json-engine/   # 智能解析、格式化、校验与极客洞察检测
+│   ├── input-hook/    # 跨平台右键长按拦截、全局快捷键、取词与单实例保护
+│   └── app/           # GPUI 快捷菜单、悬浮 JSON 编辑器与系统托盘
 └── scripts/
-    ├── build-windows.ps1    # Windows x64 单文件 Release 打包脚本
-    └── build-macos.sh       # macOS RPanel.app 打包脚本
+    ├── build-macos.sh     # macOS RPanel.app 打包脚本
+    └── build-windows.ps1  # Windows x64 单文件打包脚本
 ```
 
-## 快速运行与调试
+## 运行与构建
 
-### 1. 运行桌面主程序
+### 本地运行与调试
+
 ```bash
 # 常驻系统托盘运行
 cargo run --locked -p rpanel
 
-# 立即弹出预览面板检查界面（默认 300ms 阈值，可用 --hold-ms 调整）
-cargo run --locked -p rpanel -- --preview --hold-ms 300
-```
+# 预览悬浮编辑器 / 快捷菜单
+cargo run --locked -p rpanel -- --preview
+cargo run --locked -p rpanel -- --preview-menu
 
-### 2. 单独调试右键长按手感与取词（CLI）
-```bash
+# 单独调试右键长按手感与取词
 cargo run --locked -p input-hook --bin hook-cli -- --hold-ms 300 --move-px 8
 ```
 
-### 3. 面板快捷键
-- `Esc`：隐藏浮窗（点击浮窗外部失焦也会自动隐藏）
-- `Ctrl+Enter`（Windows） / `Cmd+Enter`（macOS）：一键复制并隐藏
-- `Ctrl+E` / `Cmd+E`：美化格式化（Pretty）
-- `Ctrl+M` / `Cmd+M`：压缩为单行（Minify）
+> **macOS 提示**：首次启用右键长按与自动取词时，需在「系统设置 → 隐私与安全性 → 辅助功能」中授予 RPanel 权限。
 
-## 测试与打包
+### 测试与打包
 
 ```bash
-# 运行全部单元测试与 Clippy
+# 单元测试与 Clippy 检查
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 
-# macOS 打包 dist/RPanel.app
-chmod +x scripts/build-macos.sh
+# macOS 打包 -> dist/RPanel.app
 ./scripts/build-macos.sh
 ```
 
-在 Windows PowerShell（已安装 Rust 与 MSVC C++ Build Tools）中打包单文件 Release：
+Windows（需安装 Rust 与 MSVC C++ Build Tools）在 PowerShell 中执行：
+
 ```powershell
 .\scripts\build-windows.ps1
 ```
-输出文件：`target/x86_64-pc-windows-msvc/release/rpanel.exe` 与 `dist/rpanel-windows-x64.zip`。
+
+产物输出至 `target/x86_64-pc-windows-msvc/release/rpanel.exe` 与 `dist/rpanel-windows-x64.zip`。
